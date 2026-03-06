@@ -30,7 +30,29 @@ final class App: ObservableObject {
     lazy var isSystem: Bool = !isUser
     lazy var isFromApple: Bool = bid.hasPrefix("com.apple.")
     lazy var isFromTroll: Bool = isSystem && !isFromApple
-    lazy var isRemovable: Bool = url.path.contains("/var/containers/Bundle/Application/")
+
+    // 原来的 isRemovable 只认 /var/containers/Bundle/Application/
+    // 会把系统 App 全部排除掉，所以这里补全常见 App 安装目录。
+    lazy var isUserAppPath: Bool = {
+        let path = url.path
+        return path.hasPrefix("/var/containers/Bundle/Application/")
+    }()
+
+    lazy var isSystemAppPath: Bool = {
+        let path = url.path
+        return path.hasPrefix("/Applications/") ||
+               path.hasPrefix("/System/Applications/") ||
+               path.hasPrefix("/System/Library/CoreServices/")
+    }()
+
+    lazy var isAppBundlePath: Bool = {
+        let path = url.path
+        return path.hasSuffix(".app") && (isUserAppPath || isSystemAppPath)
+    }()
+
+    // 保留旧属性名，避免别处编译报错
+    // 但现在它表示“这是一个有效 App Bundle 路径”，不再只表示可移除 App
+    lazy var isRemovable: Bool = isAppBundlePath
 
     weak var appList: AppListModel?
     private var cancellables: Set<AnyCancellable> = []
