@@ -63,7 +63,7 @@ final class App: ObservableObject {
         isUserAppPath || isSystemAppPath
     }()
 
-    // 保持旧字段名，避免其他文件编译报错
+    // 保留原字段名，避免其他代码引用时报错
     lazy var isRemovable: Bool = isAppBundlePath
 
     weak var appList: AppListModel?
