@@ -2,11 +2,10 @@
 //  App.swift
 //  TrollFools
 //
-//  Created by 82Flex on 2024/10/30.
-//
 
 import Combine
 import Foundation
+import UIKit
 
 final class App: ObservableObject {
     let bid: String
@@ -31,27 +30,40 @@ final class App: ObservableObject {
     lazy var isFromApple: Bool = bid.hasPrefix("com.apple.")
     lazy var isFromTroll: Bool = isSystem && !isFromApple
 
-    // 原来的 isRemovable 只认 /var/containers/Bundle/Application/
-    // 会把系统 App 全部排除掉，所以这里补全常见 App 安装目录。
+    static func normalizeAppPath(_ path: String) -> String {
+        if path.hasPrefix("/private/var/") {
+            return String(path.dropFirst("/private".count))
+        }
+        return path
+    }
+
+    lazy var normalizedPath: String = {
+        Self.normalizeAppPath(url.path)
+    }()
+
+    lazy var displayURL: URL = {
+        URL(fileURLWithPath: normalizedPath, isDirectory: true)
+    }()
+
     lazy var isUserAppPath: Bool = {
-        let path = url.path
-        return path.hasPrefix("/var/containers/Bundle/Application/")
+        let path = normalizedPath
+        return path.hasSuffix(".app") &&
+               path.hasPrefix("/var/containers/Bundle/Application/")
     }()
 
     lazy var isSystemAppPath: Bool = {
-        let path = url.path
-        return path.hasPrefix("/Applications/") ||
-               path.hasPrefix("/System/Applications/") ||
-               path.hasPrefix("/System/Library/CoreServices/")
+        let path = normalizedPath
+        return path.hasSuffix(".app") && (
+            path.hasPrefix("/Applications/") ||
+            path.hasPrefix("/System/Applications/")
+        )
     }()
 
     lazy var isAppBundlePath: Bool = {
-        let path = url.path
-        return path.hasSuffix(".app") && (isUserAppPath || isSystemAppPath)
+        isUserAppPath || isSystemAppPath
     }()
 
-    // 保留旧属性名，避免别处编译报错
-    // 但现在它表示“这是一个有效 App Bundle 路径”，不再只表示可移除 App
+    // 保持旧字段名，避免其他文件编译报错
     lazy var isRemovable: Bool = isAppBundlePath
 
     weak var appList: AppListModel?
@@ -85,6 +97,7 @@ final class App: ObservableObject {
             .applyingTransform(.stripDiacritics, reverse: false)?
             .components(separatedBy: .whitespaces)
             .joined() ?? ""
+
         Self.reloadSubject
             .filter { $0 == bid }
             .sink { [weak self] _ in
