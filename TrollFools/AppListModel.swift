@@ -2,8 +2,6 @@
 //  AppListModel.swift
 //  TrollFools
 //
-//  Created by 82Flex on 2024/10/30.
-//
 
 import Combine
 import OrderedCollections
@@ -38,7 +36,7 @@ final class AppListModel: ObservableObject {
             case .troll:
                 NSLocalizedString("TrollStore Applications", comment: "")
             case .system:
-                NSLocalizedString("Injectable System Applications", comment: "")
+                NSLocalizedString("System Applications", comment: "")
             }
         }
     }
@@ -92,12 +90,18 @@ final class AppListModel: ObservableObject {
             .store(in: &cancellables)
 
         let darwinCenter = CFNotificationCenterGetDarwinNotifyCenter()
-        CFNotificationCenterAddObserver(darwinCenter, Unmanaged.passRetained(self).toOpaque(), { _, observer, _, _, _ in
-            guard let observer = Unmanaged<AppListModel>.fromOpaque(observer!).takeUnretainedValue() as AppListModel? else {
-                return
-            }
-            observer.applicationChanged.send()
-        }, "com.apple.LaunchServices.ApplicationsChanged" as CFString, nil, .coalesce)
+        CFNotificationCenterAddObserver(
+            darwinCenter,
+            Unmanaged.passRetained(self).toOpaque(),
+            { _, observer, _, _, _ in
+                guard let observer = observer else { return }
+                let obj = Unmanaged<AppListModel>.fromOpaque(observer).takeUnretainedValue()
+                obj.applicationChanged.send()
+            },
+            "com.apple.LaunchServices.ApplicationsChanged" as CFString,
+            nil,
+            .coalesce
+        )
     }
 
     deinit {
@@ -119,13 +123,9 @@ final class AppListModel: ObservableObject {
             filteredApplications = filteredApplications.filter {
                 $0.name.localizedCaseInsensitiveContains(filter.searchKeyword) ||
                 $0.bid.localizedCaseInsensitiveContains(filter.searchKeyword) ||
-                $0.url.path.localizedCaseInsensitiveContains(filter.searchKeyword) ||
-                (
-                    $0.latinName.localizedCaseInsensitiveContains(
-                        filter.searchKeyword
-                            .components(separatedBy: .whitespaces)
-                            .joined()
-                    )
+                $0.normalizedPath.localizedCaseInsensitiveContains(filter.searchKeyword) ||
+                $0.latinName.localizedCaseInsensitiveContains(
+                    filter.searchKeyword.components(separatedBy: .whitespaces).joined()
                 )
             }
         }
@@ -137,20 +137,104 @@ final class AppListModel: ObservableObject {
         switch activeScope {
         case .all:
             activeScopeApps = Self.groupedAppList(filteredApplications)
+
         case .user:
-            activeScopeApps = Self.groupedAppList(filteredApplications.filter { $0.isUser })
+            activeScopeApps = Self.groupedAppList(
+                filteredApplications.filter { $0.isUserAppPath }
+            )
+
         case .troll:
-            activeScopeApps = Self.groupedAppList(filteredApplications.filter { $0.isFromTroll })
+            activeScopeApps = Self.groupedAppList(
+                filteredApplications.filter { $0.isFromTroll }
+            )
+
         case .system:
-            activeScopeApps = Self.groupedAppList(filteredApplications.filter { $0.isFromApple })
+            activeScopeApps = Self.groupedAppList(
+                filteredApplications.filter { $0.isSystemAppPath }
+            )
         }
     }
 
     private static let excludedIdentifiers: Set<String> = [
         "com.opa334.Dopamine",
         "org.coolstar.SileoStore",
-        "xyz.willy.Zebra",
+        "xyz.willy.Zebra"
     ]
+
+    private static func normalizeAppPath(_ path: String) -> String {
+        if path.hasPrefix("/private/var/") {
+            return String(path.dropFirst("/private".count))
+        }
+        return path
+    }
+
+    private static func isKnownApplicationBundlePath(_ url: URL) -> Bool {
+        let path = normalizeAppPath(url.path)
+        guard path.hasSuffix(".app") else { return false }
+
+        if path.hasPrefix("/var/containers/Bundle/Application/") {
+            return true
+        }
+
+        if path.hasPrefix("/Applications/") || path.hasPrefix("/System/Applications/") {
+            return true
+        }
+
+        return false
+    }
+
+    private static func isSystemServiceLikeApp(id: String, name: String, path: String) -> Bool {
+        let lowerID = id.lowercased()
+        let lowerName = name.lowercased()
+        let lowerPath = path.lowercased()
+
+        let keywords = [
+            "viewservice",
+            "uiservice",
+            "serviceui",
+            "authenticationdialog",
+            "dialog",
+            "indicator",
+            "runner",
+            "extension",
+            "plugin",
+            "xpc",
+            "daemon"
+        ]
+
+        if keywords.contains(where: { lowerID.contains($0) || lowerName.contains($0) || lowerPath.contains($0) }) {
+            return true
+        }
+
+        if lowerPath.contains("/system/library/coreservices/") {
+            return true
+        }
+
+        return false
+    }
+
+    private static func shouldDisplayApp(id: String, name: String, type: String, url: URL) -> Bool {
+        let path = normalizeAppPath(url.path)
+
+        guard isKnownApplicationBundlePath(url) else {
+            return false
+        }
+
+        // 用户 App：桌面可见的正常保留，兼容 TestFlight 的 /private/var -> /var
+        if path.hasPrefix("/var/containers/Bundle/Application/") {
+            return true
+        }
+
+        // 系统 App：只保留桌面真正可见的 App，过滤各种系统服务
+        if path.hasPrefix("/Applications/") || path.hasPrefix("/System/Applications/") {
+            if isSystemServiceLikeApp(id: id, name: name, path: path) {
+                return false
+            }
+            return true
+        }
+
+        return false
+    }
 
     private static func fetchApplications(_ unsupportedCount: inout Int) -> [App] {
         guard let workspace = LSApplicationWorkspace.default() else {
@@ -158,12 +242,20 @@ final class AppListModel: ObservableObject {
             return []
         }
 
-        let proxies = mergedApplicationProxies(from: workspace)
+        let mergedProxies = workspace.allApplications() + workspace.allInstalledApplications()
 
-        let allApps: [App] = proxies.compactMap { proxy in
+        var proxyMap: [String: LSApplicationProxy] = [:]
+        for proxy in mergedProxies {
+            guard let bid = proxy.applicationIdentifier(), !bid.isEmpty else { continue }
+            if proxyMap[bid] == nil {
+                proxyMap[bid] = proxy
+            }
+        }
+
+        let allApps: [App] = proxyMap.values.compactMap { proxy in
             guard let id = proxy.applicationIdentifier(),
                   let url = proxy.bundleURL(),
-                  let teamID = proxy.teamID(),
+                  let teamIDRaw = proxy.teamID(),
                   let appType = proxy.applicationType(),
                   let localizedName = proxy.localizedName()
             else {
@@ -181,66 +273,45 @@ final class AppListModel: ObservableObject {
                 return nil
             }
 
+            guard shouldDisplayApp(id: id, name: localizedName, type: appType, url: url) else {
+                return nil
+            }
+
+            let normalizedPath = normalizeAppPath(url.path)
+            let normalizedURL = URL(fileURLWithPath: normalizedPath, isDirectory: true)
+
+            let teamID = teamIDRaw.isEmpty ? "SYSTEM" : teamIDRaw
             let shortVersionString: String? = proxy.shortVersionString()
+
             let app = App(
                 bid: id,
                 name: localizedName,
                 type: appType,
                 teamID: teamID,
-                url: url,
+                url: normalizedURL,
                 version: shortVersionString
             )
 
-            // 保持原有逻辑：异常的“User + Apple”组合跳过
             if app.isUser && app.isFromApple {
                 return nil
             }
 
-            // 这里不再强制要求必须是 /var/containers/Bundle/Application/
-            // 这样系统 App（如 /Applications、/System/Applications 等）也会被读取出来
             return app
         }
 
         let filteredApps = allApps
             .filter { app in
-                // 保持原本功能：系统 App 保留；用户 App 仍做可注入性检查
-                if app.isSystem {
+                if app.isSystemAppPath {
                     return true
                 }
-                return InjectorV3.main.checkIsEligibleAppBundle(app.url)
+                return InjectorV3.main.checkIsEligibleAppBundle(app.displayURL)
             }
             .sorted { lhs, rhs in
                 lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
 
-        unsupportedCount = max(allApps.count - filteredApps.count, 0)
+        unsupportedCount = max(0, allApps.count - filteredApps.count)
         return filteredApps
-    }
-
-    private static func mergedApplicationProxies(from workspace: LSApplicationWorkspace) -> [LSApplicationProxy] {
-        let allApplications = workspace.allApplications() ?? []
-        let allInstalledApplications = workspace.allInstalledApplications() ?? []
-
-        var merged: [LSApplicationProxy] = []
-        var seen = Set<String>()
-
-        func appendUnique(_ proxy: LSApplicationProxy) {
-            let identifier = proxy.applicationIdentifier() ?? ""
-            let bundlePath = proxy.bundleURL()?.path ?? ""
-            let key = identifier + "|" + bundlePath
-
-            guard !key.isEmpty, !seen.contains(key) else {
-                return
-            }
-
-            seen.insert(key)
-            merged.append(proxy)
-        }
-
-        allApplications.forEach(appendUnique)
-        allInstalledApplications.forEach(appendUnique)
-
-        return merged
     }
 }
 
@@ -250,13 +321,15 @@ extension AppListModel {
             return
         }
 
+        let normalizedPath = App.normalizeAppPath(url.path)
+
         let fileURL: URL
         if #available(iOS 16, *) {
-            fileURL = filzaURL.appending(path: url.path)
+            fileURL = filzaURL.appending(path: normalizedPath)
         } else {
             fileURL = URL(
                 string: filzaURL.absoluteString +
-                    (url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "")
+                (normalizedPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "")
             )!
         }
 
@@ -264,7 +337,6 @@ extension AppListModel {
     }
 
     func rebuildIconCache() {
-        // Sadly, we can't call `trollstorehelper` directly because only TrollStore can launch it without error.
         DispatchQueue.global(qos: .userInitiated).async {
             LSApplicationWorkspace.default()?.openApplication(withBundleID: "com.opa334.TrollStore")
         }
@@ -306,8 +378,7 @@ extension AppListModel {
             if let c1 = app1.key.first,
                let c2 = app2.key.first,
                let idx1 = allowedCharacters.firstIndex(of: c1),
-               let idx2 = allowedCharacters.firstIndex(of: c2)
-            {
+               let idx2 = allowedCharacters.firstIndex(of: c2) {
                 return idx1 < idx2
             }
             return app1.key < app2.key
