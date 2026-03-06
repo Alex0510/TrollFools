@@ -162,10 +162,7 @@ final class AppListModel: ObservableObject {
     ]
 
     private static func normalizeAppPath(_ path: String) -> String {
-        if path.hasPrefix("/private/var/") {
-            return String(path.dropFirst("/private".count))
-        }
-        return path
+        App.normalizeAppPath(path)
     }
 
     private static func isKnownApplicationBundlePath(_ url: URL) -> Bool {
@@ -196,17 +193,12 @@ final class AppListModel: ObservableObject {
             "dialog",
             "indicator",
             "runner",
-            "extension",
             "plugin",
             "xpc",
             "daemon"
         ]
 
         if keywords.contains(where: { lowerID.contains($0) || lowerName.contains($0) || lowerPath.contains($0) }) {
-            return true
-        }
-
-        if lowerPath.contains("/system/library/coreservices/") {
             return true
         }
 
@@ -220,12 +212,17 @@ final class AppListModel: ObservableObject {
             return false
         }
 
-        // 用户 App：桌面可见的正常保留，兼容 TestFlight 的 /private/var -> /var
+        // 强制保留 TestFlight
+        if id == "com.apple.TestFlight" {
+            return true
+        }
+
+        // 用户应用全部保留，包含 TestFlight 的 /private/var -> /var 归一化路径
         if path.hasPrefix("/var/containers/Bundle/Application/") {
             return true
         }
 
-        // 系统 App：只保留桌面真正可见的 App，过滤各种系统服务
+        // 系统应用只显示桌面常见 App，过滤系统服务
         if path.hasPrefix("/Applications/") || path.hasPrefix("/System/Applications/") {
             if isSystemServiceLikeApp(id: id, name: name, path: path) {
                 return false
@@ -292,7 +289,7 @@ final class AppListModel: ObservableObject {
                 version: shortVersionString
             )
 
-            if app.isUser && app.isFromApple {
+            if app.isUser && app.isFromApple && app.bid != "com.apple.TestFlight" {
                 return nil
             }
 
@@ -301,9 +298,21 @@ final class AppListModel: ObservableObject {
 
         let filteredApps = allApps
             .filter { app in
+                // 强制保留 TestFlight
+                if app.bid == "com.apple.TestFlight" {
+                    return true
+                }
+
+                // 系统桌面 App 直接保留
                 if app.isSystemAppPath {
                     return true
                 }
+
+                // 用户 App 保留；避免列表阶段把 TestFlight / 某些桌面 App 误杀
+                if app.isUserAppPath {
+                    return true
+                }
+
                 return InjectorV3.main.checkIsEligibleAppBundle(app.displayURL)
             }
             .sorted { lhs, rhs in
