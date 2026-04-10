@@ -1,6 +1,6 @@
 //
 //  AppListCell.swift
-//  TrollFools
+//  TrollFool
 //
 //  Created by 82Flex on 2024/10/30.
 //
