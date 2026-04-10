@@ -1,6 +1,6 @@
 //
 //  AppListView.swift
-//  TrollFools
+//  TrollFool
 //
 //  Created by Lessica on 2024/7/19.
 //
