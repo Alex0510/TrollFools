@@ -33,6 +33,7 @@ struct AppListView: View {
     // 批量操作状态
     @State private var isBatchProcessing = false
     @State private var batchResultMessage: String?
+    @State private var showingUnsupportedApps = false
 
     var appString: String {
         let appNameString = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "TrollFools"
@@ -86,12 +87,15 @@ struct AppListView: View {
                 }
                 .alert(isPresented: .constant(batchResultMessage != nil)) {
                     Alert(
-                        title: Text(NSLocalizedString("批量操作", comment: "")),
+                        title: Text("批量操作"),
                         message: Text(batchResultMessage ?? ""),
-                        dismissButton: .default(Text(NSLocalizedString("确定", comment: ""))) {
+                        dismissButton: .default(Text("确定")) {
                             batchResultMessage = nil
                         }
                     )
+                }
+                .sheet(isPresented: $showingUnsupportedApps) {
+                    UnsupportedAppsView(unsupportedApps: appList.unsupportedApps)
                 }
         } else {
             content
@@ -237,10 +241,6 @@ struct AppListView: View {
         List {
             topSection
             appSections
-            // 新增：不支持的应用列表
-            if !appList.unsupportedApps.isEmpty && !appList.filter.isSearching && !appList.filter.showPatchedOnly {
-                unsupportedAppsSection
-            }
         }
         .animation(.easeOut, value: combines(
             appList.isRebuildNeeded,
@@ -329,10 +329,17 @@ struct AppListView: View {
 
                 if !appList.filter.isSearching && !appList.filter.showPatchedOnly && !appList.isRebuildNeeded {
                     if appList.activeScope == .system {
-                        paddedHeaderFooterText(NSLocalizedString("Only removable system applications are eligible and listed.", comment: ""))
+                        Text(NSLocalizedString("Only removable system applications are eligible and listed.", comment: ""))
+                            .font(.footnote)
                     } else if appList.activeScope != .troll && appList.unsupportedCount > 0 {
-                        // 原有的提示文字，现在下方已有独立列表，可以保留或移除。这里保留以保持原有逻辑。
-                        paddedHeaderFooterText(String(format: NSLocalizedString("And %d more unsupported user applications.", comment: ""), appList.unsupportedCount))
+                        // 可点击的按钮，显示不支持的应用数量
+                        Button {
+                            showingUnsupportedApps = true
+                        } label: {
+                            Text(String(format: NSLocalizedString("And %d more unsupported user applications. Tap to view.", comment: ""), appList.unsupportedCount))
+                                .font(.footnote)
+                                .foregroundColor(.accentColor)
+                        }
                     }
                 }
             }
@@ -400,10 +407,12 @@ struct AppListView: View {
             }
         } header: {
             if sectionKey == "_" {
-                paddedHeaderFooterText(NSLocalizedString("No Applications", comment: ""))
+                Text(NSLocalizedString("No Applications", comment: ""))
+                    .font(.footnote)
                     .textCase(.none)
             } else {
-                paddedHeaderFooterText(sectionKey == selectedIndex ? "→ \(sectionKey)" : sectionKey)
+                Text(sectionKey == selectedIndex ? "→ \(sectionKey)" : sectionKey)
+                    .font(.footnote)
             }
         } footer: {
             if (sectionKey == "_" || sectionKey == appList.activeScopeApps.keys.last) && !appList.isSelectorMode && !appList.filter.isSearching {
@@ -411,38 +420,6 @@ struct AppListView: View {
             }
         }
         .id("AppSection-\(sectionKey)")
-    }
-
-    // 不支持的应用列表区域
-    var unsupportedAppsSection: some View {
-        Section {
-            ForEach(appList.unsupportedApps, id: \.bid) { app in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(app.name)
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        if let version = app.version {
-                            Text(version)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    Text(app.bid)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
-        } header: {
-            Text("不支持的应用（无法注入）")
-                .font(.footnote)
-        } footer: {
-            Text("这些应用不满足注入条件，无法进行插件注入操作。")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
     }
 
     @ViewBuilder
@@ -516,42 +493,22 @@ struct AppListView: View {
             : NSLocalizedString("Search…", comment: ""))
     }
 
-    @ViewBuilder
-    private func paddedHeaderFooterText(_ content: String) -> some View {
-        if #available(iOS 15, *) {
-            Text(content)
-                .font(.footnote)
-        } else {
-            Text(content)
-                .font(.footnote)
-                .padding(.horizontal, 16)
-        }
-    }
-
-    // MARK: - 批量操作（全量启用/禁用）
-
-    private func getAllCurrentApps() -> [App] {
-        var allApps: [App] = []
-        for section in appList.activeScopeApps.values {
-            allApps.append(contentsOf: section)
-        }
-        return allApps
-    }
+    // MARK: - 批量操作（全量启用/禁用，作用于所有支持注入的应用）
 
     private func batchEnableAll() {
-        let allApps = getAllCurrentApps()
+        let allApps = appList.allSupportedApps
         guard !allApps.isEmpty else { return }
         performBatchOperation(on: allApps, enable: true)
     }
 
     private func batchDisableAll() {
-        let allApps = getAllCurrentApps()
+        let allApps = appList.allSupportedApps
         guard !allApps.isEmpty else { return }
         performBatchOperation(on: allApps, enable: false)
     }
 
     private func performBatchOperation(on apps: [App], enable: Bool) {
-        // 过滤出可操作的应用 (User 类型且允许注入/卸载)
+        // 过滤出可操作的应用（User 类型且允许注入/卸载）
         let operableApps = apps.filter { $0.isUser && $0.isAllowedToAttachOrDetach }
         if operableApps.isEmpty {
             batchResultMessage = "没有可操作的应用。"
@@ -606,4 +563,45 @@ struct AppListView: View {
 struct URLIdentifiable: Identifiable {
     let url: URL
     var id: String { url.absoluteString }
+}
+
+// MARK: - 不支持的应用详情页
+struct UnsupportedAppsView: View {
+    let unsupportedApps: [App]
+    @Environment(\.presentationMode) var presentationMode
+
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(unsupportedApps, id: \.bid) { app in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(app.name)
+                                .font(.headline)
+                            Spacer()
+                            if let version = app.version {
+                                Text(version)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Text(app.bid)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("不支持的应用")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") {
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+            }
+        }
+    }
 }
