@@ -157,7 +157,7 @@ struct AppListCell: View {
             }
         }
 
-        // 新增：数据目录（如果存在）
+        // 数据目录
         if let dataURL = app.dataContainerURL {
             Button {
                 openInFilza(dataURL)
@@ -166,7 +166,7 @@ struct AppListCell: View {
             }
         }
 
-        // 新增：应用组目录（如果存在）
+        // 应用组目录
         if let groupURL = app.appGroupContainerURL {
             Button {
                 openInFilza(groupURL)
@@ -175,12 +175,20 @@ struct AppListCell: View {
             }
         }
 
-        // 新增：清理数据（仅当数据目录存在时）
+        // 清理数据（兼容 iOS 14）
         if app.dataContainerURL != nil {
-            Button(role: .destructive) {
-                confirmCleanData()
-            } label: {
-                Label("清理数据", systemImage: "trash")
+            if #available(iOS 15, *) {
+                Button(role: .destructive) {
+                    confirmCleanData()
+                } label: {
+                    Label("清理数据", systemImage: "trash")
+                }
+            } else {
+                Button {
+                    confirmCleanData()
+                } label: {
+                    Label("清理数据", systemImage: "trash")
+                }
             }
         }
 
@@ -199,12 +207,10 @@ struct AppListCell: View {
     @ViewBuilder
     var cellContextMenuWrapper: some View {
         if #available(iOS 16, *) {
-            // iOS 16
             cellContextMenu
         } else {
             if #available(iOS 15, *) { }
             else {
-                // iOS 14
                 cellContextMenu
             }
         }
@@ -215,7 +221,6 @@ struct AppListCell: View {
         if #available(iOS 15, *) {
             if #available(iOS 16, *) { }
             else {
-                // iOS 15
                 Color.clear
                     .contextMenu {
                         if !appList.isSelectorMode {
@@ -237,7 +242,7 @@ struct AppListCell: View {
         appList.openInFilza(url)
     }
 
-    // MARK: - 清理数据功能
+    // MARK: - 清理数据
     private func confirmCleanData() {
         guard let dataURL = app.dataContainerURL else { return }
 
@@ -251,7 +256,6 @@ struct AppListCell: View {
             performCleanData(at: dataURL)
         })
 
-        // 获取当前视图控制器
         if let viewController = UIApplication.shared.windows.first?.rootViewController {
             viewController.present(alert, animated: true)
         }
