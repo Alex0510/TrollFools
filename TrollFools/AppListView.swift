@@ -284,7 +284,7 @@ struct AppListView: View {
                 }
             }
 
-            // 批量操作菜单（语言自适应）
+            // 批量操作菜单（使用本地化字符串）
             ToolbarItem(placement: .navigationBarTrailing) {
                 if !appList.isSelectorMode {
                     Menu {
@@ -540,7 +540,9 @@ struct AppListView: View {
 
             DispatchQueue.main.async {
                 isBatchProcessing = false
-                let operationString = enable ? NSLocalizedString("enabled", comment: "") : NSLocalizedString("disabled", comment: "")
+                let operationString = enable ?
+                    NSLocalizedString("enabled", comment: "") :
+                    NSLocalizedString("disabled", comment: "")
                 if failCount == 0 {
                     batchResultMessage = String(format: NSLocalizedString("Successfully %@ plugins for %d app(s).", comment: ""), operationString, successCount)
                 } else {
@@ -557,7 +559,7 @@ struct URLIdentifiable: Identifiable {
     var id: String { url.absoluteString }
 }
 
-// MARK: - 不支持的应用详情页
+// MARK: - 不支持的应用详情页（完全本地化）
 struct UnsupportedAppsView: View {
     let unsupportedApps: [App]
     @Environment(\.presentationMode) var presentationMode
