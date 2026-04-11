@@ -55,6 +55,7 @@ final class AppListModel: ObservableObject {
     @Published var activeScopeApps: OrderedDictionary<String, [App]> = [:]
 
     @Published var unsupportedCount: Int = 0
+    @Published var unsupportedApps: [App] = []   // 新增：存储不支持的应用列表
 
     lazy var isFilzaInstalled: Bool = {
         if let filzaURL {
@@ -106,7 +107,7 @@ final class AppListModel: ObservableObject {
     }
 
     func reload() {
-        let allApplications = Self.fetchApplications(&unsupportedCount)
+        let allApplications = Self.fetchApplications(&unsupportedCount, &unsupportedApps)
         allApplications.forEach { $0.appList = self }
         _allApplications = allApplications
         performFilter()
@@ -149,7 +150,8 @@ final class AppListModel: ObservableObject {
         "xyz.willy.Zebra",
     ]
 
-    private static func fetchApplications(_ unsupportedCount: inout Int) -> [App] {
+    // 修改方法签名，增加 unsupportedApps 输出参数
+    private static func fetchApplications(_ unsupportedCount: inout Int, _ unsupportedApps: inout [App]) -> [App] {
         let allApps: [App] = LSApplicationWorkspace.default()
             .allApplications()
             .compactMap { proxy in
@@ -196,6 +198,10 @@ final class AppListModel: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         unsupportedCount = allApps.count - filteredApps.count
+        // 计算不支持的应用列表：allApps 中排除掉 filteredApps 中的元素
+        let filteredSet = Set(filteredApps.map { $0.bid })
+        unsupportedApps = allApps.filter { !filteredSet.contains($0.bid) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         return filteredApps
     }
