@@ -32,16 +32,17 @@ final class App: ObservableObject {
     lazy var isFromTroll: Bool = isSystem && !isFromApple
     lazy var isRemovable: Bool = url.path.contains("/var/containers/Bundle/Application/")
 
-    // 数据目录（调用方法）
+    // 数据目录（使用 KVC，避免编译类型冲突）
     var dataContainerURL: URL? {
         guard let proxy = LSApplicationProxy(forIdentifier: bid) else { return nil }
-        return proxy.dataContainerURL?()
+        return proxy.value(forKey: "dataContainerURL") as? URL
     }
 
-    // 应用组目录（调用方法，取第一个共享容器）
+    // 应用组目录（取第一个共享容器）
     var appGroupContainerURL: URL? {
         guard let proxy = LSApplicationProxy(forIdentifier: bid) else { return nil }
-        return proxy.groupContainerURLs?().values.first
+        guard let groupDict = proxy.value(forKey: "groupContainerURLs") as? [String: URL] else { return nil }
+        return groupDict.values.first
     }
 
     weak var appList: AppListModel?
