@@ -86,9 +86,9 @@ struct AppListView: View {
                 }
                 .alert(isPresented: .constant(batchResultMessage != nil)) {
                     Alert(
-                        title: Text(NSLocalizedString("Batch Operation", comment: "")),
+                        title: Text(NSLocalizedString("批量操作", comment: "")),
                         message: Text(batchResultMessage ?? ""),
-                        dismissButton: .default(Text(NSLocalizedString("OK", comment: ""))) {
+                        dismissButton: .default(Text(NSLocalizedString("确定", comment: ""))) {
                             batchResultMessage = nil
                         }
                     )
@@ -237,6 +237,10 @@ struct AppListView: View {
         List {
             topSection
             appSections
+            // 新增：不支持的应用列表
+            if !appList.unsupportedApps.isEmpty && !appList.filter.isSearching && !appList.filter.showPatchedOnly {
+                unsupportedAppsSection
+            }
         }
         .animation(.easeOut, value: combines(
             appList.isRebuildNeeded,
@@ -259,7 +263,7 @@ struct AppListView: View {
                     }
                 }
             }
-            
+
             // 原有“仅显示已注入”按钮
             ToolbarItem(placement: .navigationBarTrailing) {
                 if !appList.isSelectorMode {
@@ -279,18 +283,18 @@ struct AppListView: View {
                     .accessibilityLabel(NSLocalizedString("Show Patched Only", comment: ""))
                 }
             }
-            
-            // 新增：批量启用/禁用按钮（菜单形式，包含两个选项）
+
+            // 批量操作菜单（中文显示）
             ToolbarItem(placement: .navigationBarTrailing) {
                 if !appList.isSelectorMode {
                     Menu {
                         Button(action: batchEnableAll) {
-                            Label(NSLocalizedString("Enable All Plugins", comment: ""), systemImage: "square.stack.3d.up")
+                            Label("启用所有插件", systemImage: "square.stack.3d.up")
                         }
                         .disabled(isBatchProcessing)
-                        
+
                         Button(action: batchDisableAll) {
-                            Label(NSLocalizedString("Disable All Plugins", comment: ""), systemImage: "square.stack.3d.up.slash")
+                            Label("禁用所有插件", systemImage: "square.stack.3d.up.slash")
                         }
                         .disabled(isBatchProcessing)
                     } label: {
@@ -324,14 +328,12 @@ struct AppListView: View {
                 }
 
                 if !appList.filter.isSearching && !appList.filter.showPatchedOnly && !appList.isRebuildNeeded {
-                    paddedHeaderFooterText(
-                        appList.activeScope == .system
-                            ? NSLocalizedString("Only removable system applications are eligible and listed.", comment: "")
-                            : (appList.activeScope != .troll && appList.unsupportedCount > 0
-                                ? String(format: NSLocalizedString("And %d more unsupported user applications.", comment: ""), appList.unsupportedCount)
-                                : "")
-                    )
-                    .transition(.opacity)
+                    if appList.activeScope == .system {
+                        paddedHeaderFooterText(NSLocalizedString("Only removable system applications are eligible and listed.", comment: ""))
+                    } else if appList.activeScope != .troll && appList.unsupportedCount > 0 {
+                        // 原有的提示文字，现在下方已有独立列表，可以保留或移除。这里保留以保持原有逻辑。
+                        paddedHeaderFooterText(String(format: NSLocalizedString("And %d more unsupported user applications.", comment: ""), appList.unsupportedCount))
+                    }
                 }
             }
         }
@@ -409,6 +411,38 @@ struct AppListView: View {
             }
         }
         .id("AppSection-\(sectionKey)")
+    }
+
+    // 不支持的应用列表区域
+    var unsupportedAppsSection: some View {
+        Section {
+            ForEach(appList.unsupportedApps, id: \.bid) { app in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(app.name)
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if let version = app.version {
+                            Text(version)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Text(app.bid)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            Text("不支持的应用（无法注入）")
+                .font(.footnote)
+        } footer: {
+            Text("这些应用不满足注入条件，无法进行插件注入操作。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
     }
 
     @ViewBuilder
@@ -493,9 +527,9 @@ struct AppListView: View {
                 .padding(.horizontal, 16)
         }
     }
-    
+
     // MARK: - 批量操作（全量启用/禁用）
-    
+
     private func getAllCurrentApps() -> [App] {
         var allApps: [App] = []
         for section in appList.activeScopeApps.values {
@@ -503,33 +537,33 @@ struct AppListView: View {
         }
         return allApps
     }
-    
+
     private func batchEnableAll() {
         let allApps = getAllCurrentApps()
         guard !allApps.isEmpty else { return }
         performBatchOperation(on: allApps, enable: true)
     }
-    
+
     private func batchDisableAll() {
         let allApps = getAllCurrentApps()
         guard !allApps.isEmpty else { return }
         performBatchOperation(on: allApps, enable: false)
     }
-    
+
     private func performBatchOperation(on apps: [App], enable: Bool) {
         // 过滤出可操作的应用 (User 类型且允许注入/卸载)
         let operableApps = apps.filter { $0.isUser && $0.isAllowedToAttachOrDetach }
         if operableApps.isEmpty {
-            batchResultMessage = NSLocalizedString("No operable applications found.", comment: "")
+            batchResultMessage = "没有可操作的应用。"
             return
         }
-        
+
         isBatchProcessing = true
-        
+
         DispatchQueue.global(qos: .userInitiated).async {
             var successCount = 0
             var failCount = 0
-            
+
             for app in operableApps {
                 do {
                     let injector = try InjectorV3(app.url)
@@ -554,14 +588,14 @@ struct AppListView: View {
                     failCount += 1
                 }
             }
-            
+
             DispatchQueue.main.async {
                 isBatchProcessing = false
-                let operationString = enable ? "enabled" : "disabled"
+                let operationString = enable ? "启用" : "禁用"
                 if failCount == 0 {
-                    batchResultMessage = String(format: NSLocalizedString("Successfully %@ plugins for %d app(s).", comment: ""), operationString, successCount)
+                    batchResultMessage = "已成功\(operationString) \(successCount) 个应用的插件。"
                 } else {
-                    batchResultMessage = String(format: NSLocalizedString("Completed with %d success, %d failure(s).", comment: ""), successCount, failCount)
+                    batchResultMessage = "完成，成功 \(successCount) 个，失败 \(failCount) 个。"
                 }
                 appList.reload()
             }
