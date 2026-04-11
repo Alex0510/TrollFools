@@ -256,7 +256,6 @@ struct AppListCell: View {
             performCleanData(at: dataURL)
         })
 
-        // 获取当前可见的视图控制器
         if let viewController = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController {
             viewController.present(alert, animated: true)
         }
