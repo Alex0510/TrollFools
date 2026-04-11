@@ -30,9 +30,7 @@ struct AppListView: View {
     @AppStorage("isWarningHidden")
     var isWarningHidden: Bool = false
 
-    // MARK: - Batch mode
-    @State private var editMode: EditMode = .inactive
-    @State private var selectedAppIDs = Set<String>()
+    // 批量操作状态
     @State private var isBatchProcessing = false
     @State private var batchResultMessage: String?
 
@@ -135,7 +133,6 @@ struct AppListView: View {
                     }
                 }
             }
-            .environment(\.editMode, $editMode)
     }
 
     @ViewBuilder
@@ -237,7 +234,7 @@ struct AppListView: View {
     }
 
     var listView: some View {
-        List(selection: $selectedAppIDs) {
+        List {
             topSection
             appSections
         }
@@ -263,9 +260,9 @@ struct AppListView: View {
                 }
             }
             
-            // 原有的 Show Patched Only 按钮
+            // 原有“仅显示已注入”按钮
             ToolbarItem(placement: .navigationBarTrailing) {
-                if !editMode.isEditing {
+                if !appList.isSelectorMode {
                     Button {
                         appList.filter.showPatchedOnly.toggle()
                     } label: {
@@ -283,50 +280,27 @@ struct AppListView: View {
                 }
             }
             
-            // 新增批量操作按钮
+            // 新增：批量启用/禁用按钮（菜单形式，包含两个选项）
             ToolbarItem(placement: .navigationBarTrailing) {
-                if !appList.isSelectorMode && !editMode.isEditing {
+                if !appList.isSelectorMode {
                     Menu {
-                        Button(action: enterBatchMode) {
-                            Label(NSLocalizedString("Batch Select", comment: ""), systemImage: "checklist")
-                        }
                         Button(action: batchEnableAll) {
-                            Label(NSLocalizedString("Enable Plugins for All Apps", comment: ""), systemImage: "square.stack.3d.up")
+                            Label(NSLocalizedString("Enable All Plugins", comment: ""), systemImage: "square.stack.3d.up")
                         }
+                        .disabled(isBatchProcessing)
+                        
                         Button(action: batchDisableAll) {
-                            Label(NSLocalizedString("Disable Plugins for All Apps", comment: ""), systemImage: "square.stack.3d.up.slash")
+                            Label(NSLocalizedString("Disable All Plugins", comment: ""), systemImage: "square.stack.3d.up.slash")
                         }
+                        .disabled(isBatchProcessing)
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        if isBatchProcessing {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle())
+                        } else {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
-                }
-            }
-            
-            // 批量编辑模式下的工具栏
-            ToolbarItemGroup(placement: .navigationBarLeading) {
-                if editMode.isEditing {
-                    Button(NSLocalizedString("Cancel", comment: "")) {
-                        exitBatchMode()
-                    }
-                }
-            }
-            
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                if editMode.isEditing {
-                    Button(NSLocalizedString("Enable", comment: "")) {
-                        performBatchEnable()
-                    }
-                    .disabled(selectedAppIDs.isEmpty || isBatchProcessing)
-                    
-                    Button(NSLocalizedString("Disable", comment: "")) {
-                        performBatchDisable()
-                    }
-                    .disabled(selectedAppIDs.isEmpty || isBatchProcessing)
-                    
-                    Button(NSLocalizedString("Done", comment: "")) {
-                        exitBatchMode()
-                    }
-                    .disabled(isBatchProcessing)
                 }
             }
         }
@@ -421,7 +395,6 @@ struct AppListView: View {
                             .padding(.vertical, 4)
                     }
                 }
-                .tag(app.bid)  // 用于多选
             }
         } header: {
             if sectionKey == "_" {
@@ -521,16 +494,14 @@ struct AppListView: View {
         }
     }
     
-    // MARK: - Batch Mode Helpers
+    // MARK: - 批量操作（全量启用/禁用）
     
-    private func enterBatchMode() {
-        editMode = .active
-        selectedAppIDs.removeAll()
-    }
-    
-    private func exitBatchMode() {
-        editMode = .inactive
-        selectedAppIDs.removeAll()
+    private func getAllCurrentApps() -> [App] {
+        var allApps: [App] = []
+        for section in appList.activeScopeApps.values {
+            allApps.append(contentsOf: section)
+        }
+        return allApps
     }
     
     private func batchEnableAll() {
@@ -545,43 +516,11 @@ struct AppListView: View {
         performBatchOperation(on: allApps, enable: false)
     }
     
-    private func performBatchEnable() {
-        let apps = getSelectedApps()
-        performBatchOperation(on: apps, enable: true)
-    }
-    
-    private func performBatchDisable() {
-        let apps = getSelectedApps()
-        performBatchOperation(on: apps, enable: false)
-    }
-    
-    private func getAllCurrentApps() -> [App] {
-        var allApps: [App] = []
-        for section in appList.activeScopeApps.values {
-            allApps.append(contentsOf: section)
-        }
-        return allApps
-    }
-    
-    private func getSelectedApps() -> [App] {
-        var selectedApps: [App] = []
-        for section in appList.activeScopeApps.values {
-            for app in section {
-                if selectedAppIDs.contains(app.bid) {
-                    selectedApps.append(app)
-                }
-            }
-        }
-        return selectedApps
-    }
-    
     private func performBatchOperation(on apps: [App], enable: Bool) {
-        guard !apps.isEmpty else { return }
-        
         // 过滤出可操作的应用 (User 类型且允许注入/卸载)
         let operableApps = apps.filter { $0.isUser && $0.isAllowedToAttachOrDetach }
         if operableApps.isEmpty {
-            batchResultMessage = NSLocalizedString("No operable applications selected.", comment: "")
+            batchResultMessage = NSLocalizedString("No operable applications found.", comment: "")
             return
         }
         
@@ -595,7 +534,7 @@ struct AppListView: View {
                 do {
                     let injector = try InjectorV3(app.url)
                     if enable {
-                        // 启用所有持久化插件（即重新注入已存在的、但未注入的插件）
+                        // 启用所有持久化插件（重新注入已存在的、但未注入的插件）
                         let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
                         let injectedURLs = InjectorV3.main.injectedAssetURLsInBundle(app.url)
                         let toInject = persistedURLs.filter { !injectedURLs.contains($0) }
@@ -618,13 +557,13 @@ struct AppListView: View {
             
             DispatchQueue.main.async {
                 isBatchProcessing = false
+                let operationString = enable ? "enabled" : "disabled"
                 if failCount == 0 {
-                    batchResultMessage = String(format: NSLocalizedString("Successfully %@ plugins for %d app(s).", comment: ""), enable ? "enabled" : "disabled", successCount)
+                    batchResultMessage = String(format: NSLocalizedString("Successfully %@ plugins for %d app(s).", comment: ""), operationString, successCount)
                 } else {
                     batchResultMessage = String(format: NSLocalizedString("Completed with %d success, %d failure(s).", comment: ""), successCount, failCount)
                 }
                 appList.reload()
-                exitBatchMode()
             }
         }
     }
