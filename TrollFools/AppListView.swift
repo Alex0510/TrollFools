@@ -27,19 +27,13 @@ struct AppListView: View {
 
     @State var latestVersionString: String?
 
-    @AppStorage("isAdvertisementHiddenV2")
-    var isAdvertisementHidden: Bool = false
-
     @AppStorage("isWarningHidden")
     var isWarningHidden: Bool = false
 
-    var shouldShowAdvertisement: Bool {
-        !isAdvertisementHidden &&
-            !appList.filter.isSearching &&
-            !appList.filter.showPatchedOnly &&
-            !appList.isRebuildNeeded &&
-            !appList.isSelectorMode
-    }
+    // 批量操作状态
+    @State private var isBatchProcessing = false
+    @State private var batchResultMessage: String?
+    @State private var showingUnsupportedApps = false
 
     var appString: String {
         let appNameString = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "TrollFools"
@@ -67,29 +61,38 @@ struct AppListView: View {
         if #available(iOS 15, *) {
             content
                 .alert(
-                    NSLocalizedString("Notice", comment: ""),
+                    "提示",
                     isPresented: $isWarningPresented,
                     presenting: temporaryOpenedURL
                 ) { result in
                     Button {
                         selectorOpenedURL = result
                     } label: {
-                        Text(NSLocalizedString("Continue", comment: ""))
+                        Text("继续")
                     }
                     Button(role: .destructive) {
                         selectorOpenedURL = result
                         isWarningHidden = true
                     } label: {
-                        Text(NSLocalizedString("Continue and Don’t Show Again", comment: ""))
+                        Text("继续且不再提示")
                     }
                     Button(role: .cancel) {
                         temporaryOpenedURL = nil
                         isWarningPresented = false
                     } label: {
-                        Text(NSLocalizedString("Cancel", comment: ""))
+                        Text("取消")
                     }
                 } message: {
                     Text(OptionView.warningMessage([$0.url]))
+                }
+                .alert(isPresented: .constant(batchResultMessage != nil)) {
+                    Alert(
+                        title: Text("批量操作"),
+                        message: Text(batchResultMessage ?? ""),
+                        dismissButton: .default(Text("确定")) {
+                            batchResultMessage = nil
+                        }
+                    )
                 }
         } else {
             content
@@ -102,6 +105,9 @@ struct AppListView: View {
             .sheet(item: $selectorOpenedURL) { urlWrapper in
                 AppListView()
                     .environmentObject(AppListModel(selectorURL: urlWrapper.url))
+            }
+            .sheet(isPresented: $showingUnsupportedApps) {
+                UnsupportedAppsView(unsupportedApps: appList.unsupportedApps)
             }
             .onOpenURL { url in
                 let ext = url.pathExtension.lowercased()
@@ -123,10 +129,6 @@ struct AppListView: View {
                 selectorOpenedURL = urlIdent
             }
             .onAppear {
-                if Double.random(in: 0 ..< 1) < 0.1 {
-                    isAdvertisementHidden = false
-                }
-
                 CheckUpdateManager.shared.checkUpdateIfNeeded { latestVersion, _ in
                     DispatchQueue.main.async {
                         withAnimation {
@@ -238,26 +240,18 @@ struct AppListView: View {
     var listView: some View {
         List {
             topSection
-
-            if #available(iOS 15, *) {
-                if appList.activeScope == .all && shouldShowAdvertisement {
-                    advertisementSection
-                }
-            }
-
             appSections
         }
         .animation(.easeOut, value: combines(
             appList.isRebuildNeeded,
             appList.activeScope,
             appList.filter,
-            appList.unsupportedCount,
-            shouldShowAdvertisement
+            appList.unsupportedCount
         ))
         .listStyle(.insetGrouped)
         .navigationTitle(appList.isSelectorMode ?
-            NSLocalizedString("Select Application to Inject", comment: "") :
-            NSLocalizedString("TrollFools", comment: "")
+            "选择要注入的应用" :
+            "巨魔注入器"
         )
         .navigationBarTitleDisplayMode((AppListModel.isLegacyDevice || appList.isSelectorMode) ? .inline : .automatic)
         .toolbar {
@@ -265,25 +259,53 @@ struct AppListView: View {
                 if appList.isSelectorMode, let selectorURL = appList.selectorURL {
                     VStack {
                         Text(selectorURL.lastPathComponent).font(.headline)
-                        Text(NSLocalizedString("Select Application to Inject", comment: "")).font(.caption)
+                        Text("选择要注入的应用").font(.caption)
                     }
                 }
             }
+
+            // 原有“仅显示已注入”按钮
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    appList.filter.showPatchedOnly.toggle()
-                } label: {
-                    if #available(iOS 15, *) {
-                        Image(systemName: appList.filter.showPatchedOnly
-                            ? "line.3.horizontal.decrease.circle.fill"
-                            : "line.3.horizontal.decrease.circle")
-                    } else {
-                        Image(systemName: appList.filter.showPatchedOnly
-                            ? "eject.circle.fill"
-                            : "eject.circle")
+                if !appList.isSelectorMode {
+                    Button {
+                        appList.filter.showPatchedOnly.toggle()
+                    } label: {
+                        if #available(iOS 15, *) {
+                            Image(systemName: appList.filter.showPatchedOnly
+                                ? "line.3.horizontal.decrease.circle.fill"
+                                : "line.3.horizontal.decrease.circle")
+                        } else {
+                            Image(systemName: appList.filter.showPatchedOnly
+                                ? "eject.circle.fill"
+                                : "eject.circle")
+                        }
+                    }
+                    .accessibilityLabel("仅显示已注入")
+                }
+            }
+
+            // 批量操作菜单（中文）
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if !appList.isSelectorMode {
+                    Menu {
+                        Button(action: batchEnableAll) {
+                            Label("启用所有插件", systemImage: "square.stack.3d.up")
+                        }
+                        .disabled(isBatchProcessing)
+
+                        Button(action: batchDisableAll) {
+                            Label("禁用所有插件", systemImage: "square.stack.3d.up.slash")
+                        }
+                        .disabled(isBatchProcessing)
+                    } label: {
+                        if isBatchProcessing {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle())
+                        } else {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
                 }
-                .accessibilityLabel(NSLocalizedString("Show Patched Only", comment: ""))
             }
         }
     }
@@ -306,14 +328,18 @@ struct AppListView: View {
                 }
 
                 if !appList.filter.isSearching && !appList.filter.showPatchedOnly && !appList.isRebuildNeeded {
-                    paddedHeaderFooterText(
-                        appList.activeScope == .system
-                            ? NSLocalizedString("Only removable system applications are eligible and listed.", comment: "")
-                            : (appList.activeScope != .troll && appList.unsupportedCount > 0
-                                ? String(format: NSLocalizedString("And %d more unsupported user applications.", comment: ""), appList.unsupportedCount)
-                                : "")
-                    )
-                    .transition(.opacity)
+                    if appList.activeScope == .system {
+                        Text("仅列出可注入的系统应用")
+                            .font(.footnote)
+                    } else if appList.activeScope != .troll && appList.unsupportedCount > 0 {
+                        Button {
+                            showingUnsupportedApps = true
+                        } label: {
+                            Text(String(format: "另有 %d 个不支持的用户应用。点击查看", appList.unsupportedCount))
+                                .font(.footnote)
+                                .foregroundColor(.accentColor)
+                        }
+                    }
                 }
             }
         }
@@ -326,11 +352,11 @@ struct AppListView: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(NSLocalizedString("Rebuild Icon Cache", comment: ""))
+                    Text("重建图标缓存")
                         .font(.headline)
                         .foregroundColor(.primary)
 
-                    Text(NSLocalizedString("You need to rebuild the icon cache in TrollStore to apply changes.", comment: ""))
+                    Text("你需要在 TrollStore 中重建图标缓存以应用更改。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -349,7 +375,7 @@ struct AppListView: View {
         Button {
             CheckUpdateManager.shared.executeUpgrade()
         } label: {
-            Text(String(format: NSLocalizedString("New version %@ available!", comment: ""), latestVersionString ?? "(null)"))
+            Text(String(format: "新版本 %@ 可用！", latestVersionString ?? "(null)"))
                 .font(.footnote)
         }
     }
@@ -380,10 +406,12 @@ struct AppListView: View {
             }
         } header: {
             if sectionKey == "_" {
-                paddedHeaderFooterText(NSLocalizedString("No Applications", comment: ""))
+                Text("没有应用")
+                    .font(.footnote)
                     .textCase(.none)
             } else {
-                paddedHeaderFooterText(sectionKey == selectedIndex ? "→ \(sectionKey)" : sectionKey)
+                Text(sectionKey == selectedIndex ? "→ \(sectionKey)" : sectionKey)
+                    .font(.footnote)
             }
         } footer: {
             if (sectionKey == "_" || sectionKey == appList.activeScopeApps.keys.last) && !appList.isSelectorMode && !appList.filter.isSearching {
@@ -391,37 +419,6 @@ struct AppListView: View {
             }
         }
         .id("AppSection-\(sectionKey)")
-    }
-
-    @available(iOS 15.0, *)
-    var advertisementSection: some View {
-        Section {
-            Button {
-                UIApplication.shared.open(App.advertisementApp.url)
-            } label: {
-                if #available(iOS 16, *) {
-                    AppListCell(app: App.advertisementApp)
-                } else {
-                    AppListCell(app: App.advertisementApp)
-                        .padding(.vertical, 4)
-                }
-            }
-            .foregroundColor(.primary)
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                Button {
-                    isAdvertisementHidden = true
-                } label: {
-                    Label(NSLocalizedString("Hide", comment: ""), systemImage: "eye.slash")
-                }
-                .tint(.red)
-            }
-        } header: {
-            paddedHeaderFooterText(NSLocalizedString("Advertisement", comment: ""))
-                .textCase(.none)
-        } footer: {
-            paddedHeaderFooterText(NSLocalizedString("Buy our paid products to support us if you like TrollFools!", comment: ""))
-        }
-        .id("AdsSection")
     }
 
     @ViewBuilder
@@ -447,7 +444,7 @@ struct AppListView: View {
             Button {
                 UIApplication.shared.open(URL(string: "https://github.com/Lessica/TrollFools")!)
             } label: {
-                Text(NSLocalizedString("Source Code", comment: ""))
+                Text("源代码")
                     .font(.footnote)
             }
         }
@@ -491,19 +488,79 @@ struct AppListView: View {
 
     private func reloadSearchBarPlaceholder(_ searchBar: UISearchBar, showPatchedOnly: Bool) {
         searchBar.placeholder = (showPatchedOnly
-            ? NSLocalizedString("Search Patched…", comment: "")
-            : NSLocalizedString("Search…", comment: ""))
+            ? "搜索已注入…"
+            : "搜索…")
     }
 
-    @ViewBuilder
-    private func paddedHeaderFooterText(_ content: String) -> some View {
-        if #available(iOS 15, *) {
-            Text(content)
-                .font(.footnote)
-        } else {
-            Text(content)
-                .font(.footnote)
-                .padding(.horizontal, 16)
+    // MARK: - 批量操作（作用于所有支持注入的应用，包括巨魔应用）
+
+    private func batchEnableAll() {
+        let allApps = appList.allSupportedApps
+        guard !allApps.isEmpty else { return }
+        performBatchOperation(on: allApps, enable: true)
+    }
+
+    private func batchDisableAll() {
+        let allApps = appList.allSupportedApps
+        guard !allApps.isEmpty else { return }
+        performBatchOperation(on: allApps, enable: false)
+    }
+
+    private func performBatchOperation(on apps: [App], enable: Bool) {
+        isBatchProcessing = true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var successCount = 0
+            var failCount = 0
+
+            for app in apps {
+                do {
+                    let injector = try InjectorV3(app.url)
+                    var didSomething = false
+
+                    if enable {
+                        // 启用所有持久化插件（重新注入已存在的、但未注入的插件）
+                        let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
+                        let injectedURLs = InjectorV3.main.injectedAssetURLsInBundle(app.url)
+                        let toInject = persistedURLs.filter { !injectedURLs.contains($0) }
+                        if !toInject.isEmpty {
+                            try injector.inject(toInject, shouldPersist: false)
+                            didSomething = true
+                        }
+                    } else {
+                        // 禁用所有已注入的插件（但不删除文件）
+                        let injectedURLs = InjectorV3.main.injectedAssetURLsInBundle(app.url)
+                        if !injectedURLs.isEmpty {
+                            try injector.ejectAll(shouldDesist: false)
+                            didSomething = true
+                        }
+                    }
+
+                    if didSomething {
+                        DispatchQueue.main.async {
+                            app.reload()
+                        }
+                        successCount += 1
+                    }
+                } catch {
+                    DDLogError("Batch operation failed for \(app.bid): \(error)")
+                    failCount += 1
+                }
+            }
+
+            DispatchQueue.main.async {
+                isBatchProcessing = false
+                if failCount == 0 {
+                    if enable {
+                        batchResultMessage = "已成功启用 \(successCount) 个应用的插件。"
+                    } else {
+                        batchResultMessage = "已成功禁用 \(successCount) 个应用的插件。"
+                    }
+                } else {
+                    batchResultMessage = "完成，成功 \(successCount) 个，失败 \(failCount) 个。"
+                }
+                appList.reload()
+            }
         }
     }
 }
@@ -511,4 +568,53 @@ struct AppListView: View {
 struct URLIdentifiable: Identifiable {
     let url: URL
     var id: String { url.absoluteString }
+}
+
+// MARK: - 不支持的应用详情页（带图标）
+struct UnsupportedAppsView: View {
+    let unsupportedApps: [App]
+    @Environment(\.presentationMode) var presentationMode
+
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(unsupportedApps, id: \.bid) { app in
+                    HStack(spacing: 12) {
+                        // 应用图标
+                        Image(uiImage: app.icon ?? UIImage())
+                            .resizable()
+                            .frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(app.name)
+                                    .font(.headline)
+                                Spacer()
+                                if let version = app.version {
+                                    Text(version)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Text(app.bid)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("不支持的应用")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") {
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+            }
+        }
+    }
 }
