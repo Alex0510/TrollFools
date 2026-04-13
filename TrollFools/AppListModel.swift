@@ -77,6 +77,8 @@ final class AppListModel: ObservableObject {
 
     // 记录每个应用上次自动注入时的版本，避免重复注入
     private let autoInjectKeyPrefix = "AutoInjectVersion_"
+    // 串行队列，避免并发执行 InjectorV3 操作导致内存问题
+    private let autoInjectQueue = DispatchQueue(label: "wiki.qaq.TrollFools.autoInject", qos: .background)
 
     init(selectorURL: URL? = nil) {
         self.selectorURL = selectorURL
@@ -153,10 +155,11 @@ final class AppListModel: ObservableObject {
         }
     }
 
-    // MARK: - 自动重新注入（应用更新后）
+    // MARK: - 自动重新注入（应用更新后）- 使用串行队列避免并发问题
     private func autoReinjectAfterUpdate() {
+        // 收集需要自动注入的应用信息
+        var appsToInject: [(app: App, currentVersion: String)] = []
         for app in _allApplications {
-            // 条件：有持久化插件、当前未注入、且版本号已变化（未自动注入过此版本）
             guard app.hasPersistedAssets && !app.isInjected,
                   let currentVersion = app.version else {
                 continue
@@ -164,36 +167,44 @@ final class AppListModel: ObservableObject {
             let key = autoInjectKeyPrefix + app.bid
             let lastAutoInjectedVersion = UserDefaults.standard.string(forKey: key)
             if lastAutoInjectedVersion != currentVersion {
-                // 版本不同，执行自动注入
-                DispatchQueue.global(qos: .background).async { [weak self] in
-                    guard let self = self else { return }
-                    do {
-                        let injector = try InjectorV3(app.url)
-                        if injector.appID.isEmpty {
-                            injector.appID = app.bid
-                        }
-                        if injector.teamID.isEmpty {
-                            injector.teamID = app.teamID
-                        }
-                        // 使用默认配置（与全局设置一致，可根据需要调整）
-                        injector.useWeakReference = UserDefaults.standard.bool(forKey: "UseWeakReference-\(app.bid)")
-                        injector.preferMainExecutable = UserDefaults.standard.bool(forKey: "PreferMainExecutable-\(app.bid)")
-                        injector.useFrameworkEnumerationFallback = UserDefaults.standard.bool(forKey: "UseFrameworkEnumerationFallback-\(app.bid)")
-                        let strategyRaw = UserDefaults.standard.string(forKey: "InjectStrategy-\(app.bid)") ?? InjectorV3.Strategy.lexicographic.rawValue
-                        injector.injectStrategy = InjectorV3.Strategy(rawValue: strategyRaw) ?? .lexicographic
+                appsToInject.append((app, currentVersion))
+            }
+        }
+        guard !appsToInject.isEmpty else { return }
 
-                        let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
-                        if !persistedURLs.isEmpty {
-                            try injector.inject(persistedURLs, shouldPersist: false)
-                            DispatchQueue.main.async {
-                                app.reload()
-                            }
-                            // 记录已自动注入的版本
-                            UserDefaults.standard.set(currentVersion, forKey: key)
-                        }
-                    } catch {
-                        DDLogError("Auto reinject failed for \(app.bid): \(error)")
+        // 在串行队列中逐个执行注入，避免并发内存问题
+        autoInjectQueue.async { [weak self] in
+            for (app, currentVersion) in appsToInject {
+                guard let self = self else { break }
+                do {
+                    let injector = try InjectorV3(app.url)
+                    if injector.appID.isEmpty {
+                        injector.appID = app.bid
                     }
+                    if injector.teamID.isEmpty {
+                        injector.teamID = app.teamID
+                    }
+                    // 读取用户配置（注意：UserDefaults 是线程安全的）
+                    let useWeakReference = UserDefaults.standard.bool(forKey: "UseWeakReference-\(app.bid)")
+                    let preferMainExecutable = UserDefaults.standard.bool(forKey: "PreferMainExecutable-\(app.bid)")
+                    let useFrameworkEnumerationFallback = UserDefaults.standard.bool(forKey: "UseFrameworkEnumerationFallback-\(app.bid)")
+                    let strategyRaw = UserDefaults.standard.string(forKey: "InjectStrategy-\(app.bid)") ?? InjectorV3.Strategy.lexicographic.rawValue
+                    injector.useWeakReference = useWeakReference
+                    injector.preferMainExecutable = preferMainExecutable
+                    injector.useFrameworkEnumerationFallback = useFrameworkEnumerationFallback
+                    injector.injectStrategy = InjectorV3.Strategy(rawValue: strategyRaw) ?? .lexicographic
+
+                    let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
+                    if !persistedURLs.isEmpty {
+                        try injector.inject(persistedURLs, shouldPersist: false)
+                        DispatchQueue.main.async {
+                            app.reload()
+                        }
+                        // 记录已自动注入的版本
+                        UserDefaults.standard.set(currentVersion, forKey: self.autoInjectKeyPrefix + app.bid)
+                    }
+                } catch {
+                    DDLogError("Auto reinject failed for \(app.bid): \(error)")
                 }
             }
         }
