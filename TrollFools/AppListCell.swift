@@ -157,6 +157,18 @@ struct AppListCell: View {
             }
         }
 
+        // 应用目录（原“在 Filza 中显示”）
+        Button {
+            openInFilza(app.url)
+        } label: {
+            if isFilzaInstalled {
+                Label("应用目录", systemImage: "scope")
+            } else {
+                Label("应用目录 (Filza未安装)", systemImage: "xmark.octagon")
+            }
+        }
+        .disabled(!isFilzaInstalled)
+
         // 数据目录
         if let dataURL = app.dataContainerURL {
             Button {
@@ -191,17 +203,6 @@ struct AppListCell: View {
                 }
             }
         }
-
-        Button {
-            openInFilza(app.url)
-        } label: {
-            if isFilzaInstalled {
-                Label(NSLocalizedString("Show in Filza", comment: ""), systemImage: "scope")
-            } else {
-                Label(NSLocalizedString("Filza (URL Scheme) Not Installed", comment: ""), systemImage: "xmark.octagon")
-            }
-        }
-        .disabled(!isFilzaInstalled)
     }
 
     @ViewBuilder
