@@ -74,6 +74,9 @@ final class AppListModel: ObservableObject {
     private let applicationChanged = PassthroughSubject<Void, Never>()
     private var cancellables = Set<AnyCancellable>()
 
+    // 记录每个应用上次自动注入时的版本，避免重复注入
+    private let autoInjectKeyPrefix = "AutoInjectVersion_"
+
     init(selectorURL: URL? = nil) {
         self.selectorURL = selectorURL
         reload()
@@ -114,6 +117,8 @@ final class AppListModel: ObservableObject {
         allApplications.forEach { $0.appList = self }
         _allApplications = allApplications
         performFilter()
+        // 应用列表刷新后，检查需要自动重新注入的应用
+        autoReinjectAfterUpdate()
     }
 
     func performFilter() {
@@ -144,6 +149,52 @@ final class AppListModel: ObservableObject {
             activeScopeApps = Self.groupedAppList(filteredApplications.filter { $0.isFromTroll })
         case .system:
             activeScopeApps = Self.groupedAppList(filteredApplications.filter { $0.isFromApple })
+        }
+    }
+
+    // MARK: - 自动重新注入（应用更新后）
+    private func autoReinjectAfterUpdate() {
+        for app in _allApplications {
+            // 条件：有持久化插件、当前未注入、且版本号已变化（未自动注入过此版本）
+            guard app.hasPersistedAssets && !app.isInjected,
+                  let currentVersion = app.version else {
+                continue
+            }
+            let key = autoInjectKeyPrefix + app.bid
+            let lastAutoInjectedVersion = UserDefaults.standard.string(forKey: key)
+            if lastAutoInjectedVersion != currentVersion {
+                // 版本不同，执行自动注入
+                DispatchQueue.global(qos: .background).async { [weak self] in
+                    guard let self = self else { return }
+                    do {
+                        let injector = try InjectorV3(app.url)
+                        if injector.appID.isEmpty {
+                            injector.appID = app.bid
+                        }
+                        if injector.teamID.isEmpty {
+                            injector.teamID = app.teamID
+                        }
+                        // 使用默认配置（与全局设置一致，可根据需要调整）
+                        injector.useWeakReference = UserDefaults.standard.bool(forKey: "UseWeakReference-\(app.bid)")
+                        injector.preferMainExecutable = UserDefaults.standard.bool(forKey: "PreferMainExecutable-\(app.bid)")
+                        injector.useFrameworkEnumerationFallback = UserDefaults.standard.bool(forKey: "UseFrameworkEnumerationFallback-\(app.bid)")
+                        let strategyRaw = UserDefaults.standard.string(forKey: "InjectStrategy-\(app.bid)") ?? InjectorV3.Strategy.lexicographic.rawValue
+                        injector.injectStrategy = InjectorV3.Strategy(rawValue: strategyRaw) ?? .lexicographic
+
+                        let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
+                        if !persistedURLs.isEmpty {
+                            try injector.inject(persistedURLs, shouldPersist: false)
+                            DispatchQueue.main.async {
+                                app.reload()
+                            }
+                            // 记录已自动注入的版本
+                            UserDefaults.standard.set(currentVersion, forKey: key)
+                        }
+                    } catch {
+                        DDLogError("Auto reinject failed for \(app.bid): \(error)")
+                    }
+                }
+            }
         }
     }
 
