@@ -7,6 +7,7 @@
 
 import CocoaLumberjackSwift
 import SwiftUI
+import Security // Added for Keychain operations
 
 struct AppListCell: View {
     @EnvironmentObject var appList: AppListModel
@@ -249,7 +250,7 @@ struct AppListCell: View {
 
         let alert = UIAlertController(
             title: "清理数据",
-            message: "此操作将删除应用「\(app.name)」的所有用户数据（包括文档、缓存等），此操作不可撤销。是否继续？",
+            message: "此操作将删除应用「\(app.name)」的所有用户数据（包括文档、缓存、钥匙串等），此操作不可撤销。是否继续？",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -269,6 +270,14 @@ struct AppListCell: View {
             var success = true
             var errorMessage: String?
 
+            // 1. 清理 Keychain 数据
+            let keychainCleared = clearKeychainItems()
+            if !keychainCleared {
+                success = false
+                errorMessage = "Keychain 清理失败"
+            }
+
+            // 2. 清理沙盒目录
             do {
                 let contents = try fileManager.contentsOfDirectory(atPath: directory.path)
                 for item in contents {
@@ -277,17 +286,106 @@ struct AppListCell: View {
                 }
             } catch {
                 success = false
-                errorMessage = error.localizedDescription
+                if errorMessage == nil {
+                    errorMessage = error.localizedDescription
+                } else {
+                    errorMessage = "\(errorMessage!); \(error.localizedDescription)"
+                }
             }
 
             DispatchQueue.main.async {
                 isCleaningData = false
                 if success {
-                    cleanResultMessage = "数据已清理完成。"
+                    cleanResultMessage = "数据与钥匙串已清理完成。"
                 } else {
                     cleanResultMessage = "清理失败：\(errorMessage ?? "未知错误")"
                 }
             }
         }
+    }
+
+    // MARK: - Keychain 清理
+    /// 删除当前应用所有可访问的 Keychain 项
+    /// - Returns: 是否成功清理（无错误发生）
+    private func clearKeychainItems() -> Bool {
+        let secItemClasses = [
+            kSecClassGenericPassword,
+            kSecClassInternetPassword,
+            kSecClassCertificate,
+            kSecClassKey,
+            kSecClassIdentity
+        ]
+
+        var overallSuccess = true
+
+        for secItemClass in secItemClasses {
+            let query: [String: Any] = [
+                kSecClass as String: secItemClass,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnAttributes as String: true,
+                kSecReturnData as String: false
+            ]
+
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+            if status == errSecSuccess, let items = result as? [[String: Any]] {
+                for item in items {
+                    // 构建删除查询
+                    var deleteQuery: [String: Any] = [
+                        kSecClass as String: secItemClass
+                    ]
+
+                    // 根据类别添加匹配条件
+                    if let account = item[kSecAttrAccount as String] {
+                        deleteQuery[kSecAttrAccount as String] = account
+                    }
+                    if let service = item[kSecAttrService as String] {
+                        deleteQuery[kSecAttrService as String] = service
+                    }
+                    if let accessGroup = item[kSecAttrAccessGroup as String] {
+                        deleteQuery[kSecAttrAccessGroup as String] = accessGroup
+                    }
+                    if let server = item[kSecAttrServer as String] {
+                        deleteQuery[kSecAttrServer as String] = server
+                    }
+                    if let protocolType = item[kSecAttrProtocol as String] {
+                        deleteQuery[kSecAttrProtocol as String] = protocolType
+                    }
+                    if let authenticationType = item[kSecAttrAuthenticationType as String] {
+                        deleteQuery[kSecAttrAuthenticationType as String] = authenticationType
+                    }
+                    if let path = item[kSecAttrPath as String] {
+                        deleteQuery[kSecAttrPath as String] = path
+                    }
+                    if let port = item[kSecAttrPort as String] {
+                        deleteQuery[kSecAttrPort as String] = port
+                    }
+                    if let label = item[kSecAttrLabel as String] {
+                        deleteQuery[kSecAttrLabel as String] = label
+                    }
+                    if let applicationLabel = item[kSecAttrApplicationLabel as String] {
+                        deleteQuery[kSecAttrApplicationLabel as String] = applicationLabel
+                    }
+                    if let applicationTag = item[kSecAttrApplicationTag as String] {
+                        deleteQuery[kSecAttrApplicationTag as String] = applicationTag
+                    }
+                    if let keyClass = item[kSecAttrKeyClass as String] {
+                        deleteQuery[kSecAttrKeyClass as String] = keyClass
+                    }
+
+                    let deleteStatus = SecItemDelete(deleteQuery as CFDictionary)
+                    if deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound {
+                        DDLogError("Failed to delete keychain item: \(deleteStatus)", ddlog: InjectorV3.main.logger)
+                        overallSuccess = false
+                    }
+                }
+            } else if status != errSecItemNotFound {
+                DDLogError("Failed to query keychain items: \(status)", ddlog: InjectorV3.main.logger)
+                overallSuccess = false
+            }
+        }
+
+        return overallSuccess
     }
 }
