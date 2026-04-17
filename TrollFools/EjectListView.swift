@@ -24,7 +24,6 @@ struct EjectListView: View {
 
     @State var isWarningPresented = false
 
-    // 继续注入相关
     @State var isContinueInjectPresented = false
     @State var isInjecting = false
     @State var injectSuccessMessage: String?
@@ -196,7 +195,6 @@ struct EjectListView: View {
                         .disabled(shouldDisableActions || !ejectList.isOkToDisableAll)
                         .foregroundColor(shouldDisableActions ? .secondary : .accentColor)
 
-                    // 继续注入按钮
                     continueInjectButton
                         .disabled(shouldDisableActions)
                         .foregroundColor(shouldDisableActions ? .secondary : .accentColor)
@@ -283,7 +281,6 @@ struct EjectListView: View {
         }
     }
 
-    // 继续注入按钮
     var continueInjectButton: some View {
         Button {
             isContinueInjectPresented = true
@@ -601,7 +598,10 @@ struct EjectListView: View {
                     DispatchQueue.main.async {
                         ejectList.app.reload()
                         ejectList.reload()
-                        AutoInjectService.shared.checkAndAutoInjectAll()
+                        
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            AutoInjectService.shared.checkAndAutoInjectAll()
+                        }
                         
                         isEnablingAll = false
                         isDisablingAll = false
@@ -690,7 +690,6 @@ struct EjectListView: View {
         }
     }
 
-    // MARK: - 继续注入逻辑
     private func continueInject(with urls: [URL]) {
         isInjecting = true
         let view = viewControllerHost.viewController?.navigationController?.view
