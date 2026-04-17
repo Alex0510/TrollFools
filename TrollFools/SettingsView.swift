@@ -34,7 +34,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                // 原有设置项...
+                // 注入策略
                 Section {
                     Picker(NSLocalizedString("Injection Strategy", comment: ""), selection: $injectStrategy) {
                         ForEach(InjectorV3.Strategy.allCases, id: \.self) { strategy in
@@ -45,25 +45,28 @@ struct SettingsView: View {
                     paddedHeaderFooterText(NSLocalizedString("Choose how TrollFools tries possible targets. If the plug-in does not work as expected, try another option.", comment: ""))
                 }
 
+                // 兼容模式
                 Section {
                     Toggle(NSLocalizedString("Enable Compatibility Fallback", comment: ""), isOn: $useFrameworkEnumerationFallback)
                 } footer: {
                     paddedHeaderFooterText(NSLocalizedString("If needed, TrollFools will use a compatibility mode to improve success rate. Keeping this on is recommended.", comment: ""))
                 }
 
+                // 优先主可执行文件
                 Section {
                     Toggle(NSLocalizedString("Prefer Main Executable", comment: ""), isOn: $preferMainExecutable)
                 } footer: {
                     paddedHeaderFooterText(NSLocalizedString("Try the app’s main file first. Turn this on when the plug-in does not seem active.", comment: ""))
                 }
 
+                // 弱引用
                 Section {
                     Toggle(NSLocalizedString("Use Weak Reference", comment: ""), isOn: $useWeakReference)
                 } footer: {
                     paddedHeaderFooterText(NSLocalizedString("Controls whether the app crashes when the plug-in cannot be found. Keeping this on can reduce unexpected crashes in some scenarios, but the plug-in will not work in those cases.", comment: ""))
                 }
 
-                // 自动恢复管理 Section
+                // 自动恢复管理
                 Section {
                     HStack {
                         Text("自动恢复状态")
@@ -104,16 +107,18 @@ struct SettingsView: View {
                                         Text("\(state.pluginNames.count) 个插件")
                                             .font(.caption)
                                             .foregroundColor(.secondary)
+                                        
+                                        // 删除按钮（替代左滑删除，兼容 iOS 14）
+                                        Button(action: {
+                                            removeSavedState(for: state.bid)
+                                        }) {
+                                            Image(systemName: "trash")
+                                                .foregroundColor(.red)
+                                        }
+                                        .buttonStyle(BorderlessButtonStyle())
                                     }
                                 }
                             )
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    removeSavedState(for: state.bid)
-                                } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                            }
                         }
                     } else if savedStatesCount > 0 {
                         Text("加载中...")
@@ -146,7 +151,7 @@ struct SettingsView: View {
                 } header: {
                     Text("自动恢复管理")
                 } footer: {
-                    paddedHeaderFooterText("当应用更新后，TrollFools 会自动重新启用之前启用的插件。此处显示已保存的插件状态，清除后将不会自动恢复。\n左滑应用可删除其保存状态。")
+                    paddedHeaderFooterText("当应用更新后，TrollFools 会自动重新启用之前启用的插件。此处显示已保存的插件状态，清除后将不会自动恢复。\n点击右侧垃圾桶图标可删除该应用的恢复记录。")
                 }
             }
             .navigationTitle(NSLocalizedString("Advanced Settings", comment: ""))
