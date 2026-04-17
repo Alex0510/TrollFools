@@ -9,6 +9,14 @@ import CocoaLumberjackSwift
 import Foundation
 import UIKit
 
+struct SavedAppState: Identifiable {
+    let id: String // bundle identifier
+    let bid: String
+    let appName: String
+    let pluginNames: [String]  // 插件文件名列表
+    let pluginPaths: [String]  // 插件完整路径
+}
+
 final class AutoResumeService: ObservableObject {
     static let shared = AutoResumeService()
     
@@ -56,6 +64,10 @@ final class AutoResumeService: ObservableObject {
         allEnabled[app.bid] = enabledPaths
         userDefaults.set(allEnabled, forKey: enabledPlugInsKey)
         userDefaults.synchronize()
+        // 通知更新
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("AutoResumeStateChanged"), object: nil)
+        }
     }
     
     // 保存单个插件状态
@@ -80,6 +92,9 @@ final class AutoResumeService: ObservableObject {
         
         userDefaults.set(allEnabled, forKey: enabledPlugInsKey)
         userDefaults.synchronize()
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("AutoResumeStateChanged"), object: nil)
+        }
     }
     
     // 移除应用的保存状态
@@ -88,6 +103,9 @@ final class AutoResumeService: ObservableObject {
         allEnabled.removeValue(forKey: app.bid)
         userDefaults.set(allEnabled, forKey: enabledPlugInsKey)
         userDefaults.synchronize()
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("AutoResumeStateChanged"), object: nil)
+        }
     }
     
     // 清除所有保存状态
@@ -98,6 +116,9 @@ final class AutoResumeService: ObservableObject {
         userDefaults.removeObject(forKey: appVersionsKey)
         userDefaults.synchronize()
         DDLogInfo("Cleared \(count) saved states from AutoResumeService")
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("AutoResumeStateChanged"), object: nil)
+        }
         return count
     }
     
@@ -106,10 +127,60 @@ final class AutoResumeService: ObservableObject {
         return loadAllEnabledPlugIns().count
     }
     
-    // 获取保存状态的应用列表
+    // 获取保存状态的应用列表（仅 bid 和插件数量）
     func getSavedStatesList() -> [(bid: String, count: Int)] {
         let allEnabled = loadAllEnabledPlugIns()
         return allEnabled.map { ($0.key, $0.value.count) }.sorted { $0.bid < $1.bid }
+    }
+    
+    // 获取详细的应用状态（包含应用名称和插件文件名）
+    func getSavedStatesDetail() -> [SavedAppState] {
+        let allEnabled = loadAllEnabledPlugIns()
+        var states: [SavedAppState] = []
+        
+        for (bid, paths) in allEnabled {
+            let appName = getAppName(for: bid) ?? bid
+            let pluginNames = paths.map { URL(fileURLWithPath: $0).lastPathComponent }
+            states.append(SavedAppState(
+                id: bid,
+                bid: bid,
+                appName: appName,
+                pluginNames: pluginNames,
+                pluginPaths: paths
+            ))
+        }
+        return states.sorted { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+    }
+    
+    // 删除指定应用的所有保存状态
+    func removeSavedState(for bid: String) {
+        var allEnabled = loadAllEnabledPlugIns()
+        allEnabled.removeValue(forKey: bid)
+        userDefaults.set(allEnabled, forKey: enabledPlugInsKey)
+        userDefaults.synchronize()
+        
+        // 同时删除版本记录
+        var versions = loadAppVersions()
+        versions.removeValue(forKey: bid)
+        userDefaults.set(versions, forKey: appVersionsKey)
+        userDefaults.synchronize()
+        
+        DDLogInfo("Removed saved state for \(bid)")
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: NSNotification.Name("AutoResumeStateChanged"), object: nil)
+        }
+    }
+    
+    // 获取应用显示名称
+    private func getAppName(for bid: String) -> String? {
+        // 先从已安装应用中查找
+        let apps = LSApplicationWorkspace.default().allApplications()
+        for proxy in apps {
+            if proxy.applicationIdentifier() == bid {
+                return proxy.localizedName()
+            }
+        }
+        return nil
     }
     
     // 加载所有保存的插件状态
@@ -208,7 +279,7 @@ final class AutoResumeService: ObservableObject {
         }
     }
     
-    // 获取应用的版本标识符（使用构建号，因为应用更新时构建号会变）
+    // 获取应用的版本标识符
     private func getAppVersionIdentifier(_ app: App) -> String {
         let infoPlistPath = app.url.appendingPathComponent("Info.plist")
         guard let dict = NSDictionary(contentsOf: infoPlistPath) as? [String: Any] else {
