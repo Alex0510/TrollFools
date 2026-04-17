@@ -137,11 +137,18 @@ struct InjectView: View {
             injector.useFrameworkEnumerationFallback = useFrameworkEnumerationFallback
             injector.injectStrategy = injectStrategy
 
-            try injector.inject(urlList, shouldPersist: true)
-            return .success(SuccessPayload(
-                logFileURL: injector.latestLogFileURL,
-                didUseFallback: injector.didUseMachOEnumerationFallback
-            ))
+            // 在 inject() 方法中，return .success 之前添加：
+try injector.inject(urlList, shouldPersist: true)
+
+// 注入成功后触发后台检查
+DispatchQueue.main.async {
+    AutoInjectService.shared.checkAndAutoInjectAll()
+}
+
+return .success(SuccessPayload(
+    logFileURL: injector.latestLogFileURL,
+    didUseFallback: injector.didUseMachOEnumerationFallback
+))
 
         } catch {
             DDLogError("\(error)", ddlog: InjectorV3.main.logger)
