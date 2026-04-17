@@ -138,8 +138,14 @@ struct InjectView: View {
 
             try injector.inject(urlList, shouldPersist: true)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                AutoInjectService.shared.checkAndAutoInjectAll()
+            // 保存自动恢复状态：将当前应用所有已启用的插件保存
+            DispatchQueue.main.async {
+                let enabledURLs = InjectorV3.main.injectedAssetURLsInBundle(self.app.url)
+                AutoResumeService.shared.saveEnabledPlugIns(for: self.app, enabledURLs: enabledURLs)
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    AutoInjectService.shared.checkAndAutoInjectAll()
+                }
             }
 
             return .success(SuccessPayload(
