@@ -13,8 +13,8 @@ struct SavedAppState: Identifiable {
     let id: String // bundle identifier
     let bid: String
     let appName: String
-    let pluginNames: [String]  // 插件文件名列表
-    let pluginPaths: [String]  // 插件完整路径
+    let pluginNames: [String]
+    let pluginPaths: [String]
 }
 
 final class AutoResumeService: ObservableObject {
@@ -64,7 +64,6 @@ final class AutoResumeService: ObservableObject {
         allEnabled[app.bid] = enabledPaths
         userDefaults.set(allEnabled, forKey: enabledPlugInsKey)
         userDefaults.synchronize()
-        // 通知更新
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: NSNotification.Name("AutoResumeStateChanged"), object: nil)
         }
@@ -159,7 +158,6 @@ final class AutoResumeService: ObservableObject {
         userDefaults.set(allEnabled, forKey: enabledPlugInsKey)
         userDefaults.synchronize()
         
-        // 同时删除版本记录
         var versions = loadAppVersions()
         versions.removeValue(forKey: bid)
         userDefaults.set(versions, forKey: appVersionsKey)
@@ -173,8 +171,7 @@ final class AutoResumeService: ObservableObject {
     
     // 获取应用显示名称
     private func getAppName(for bid: String) -> String? {
-        // 先从已安装应用中查找
-        let apps = LSApplicationWorkspace.default().allApplications()
+        guard let apps = LSApplicationWorkspace.default().allApplications() else { return nil }
         for proxy in apps {
             if proxy.applicationIdentifier() == bid {
                 return proxy.localizedName()
@@ -230,7 +227,6 @@ final class AutoResumeService: ObservableObject {
             let currentVersion = getAppVersionIdentifier(app)
             let savedVersion = savedVersions[app.bid] ?? ""
             
-            // 检查应用是否需要恢复插件
             let needResume = (currentVersion != savedVersion && savedVersion != "")
             
             if needResume {
@@ -258,7 +254,6 @@ final class AutoResumeService: ObservableObject {
                 }
             }
             
-            // 更新保存的版本信息
             if currentVersion != savedVersion {
                 saveAppVersion(app, version: currentVersion)
             }
@@ -279,7 +274,6 @@ final class AutoResumeService: ObservableObject {
         }
     }
     
-    // 获取应用的版本标识符
     private func getAppVersionIdentifier(_ app: App) -> String {
         let infoPlistPath = app.url.appendingPathComponent("Info.plist")
         guard let dict = NSDictionary(contentsOf: infoPlistPath) as? [String: Any] else {
@@ -290,7 +284,6 @@ final class AutoResumeService: ObservableObject {
         return "\(version)_\(build)"
     }
     
-    // 手动触发检查
     func forceCheck() {
         checkAndResumePlugIns()
     }
