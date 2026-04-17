@@ -1,4 +1,3 @@
-// AutoInjectService.swift
 //
 //  AutoInjectService.swift
 //  TrollFools
@@ -15,6 +14,7 @@ final class AutoInjectService: ObservableObject {
     
     private var timer: Timer?
     private var isMonitoring = false
+    private var isInjecting = false
     
     private init() {}
     
@@ -22,12 +22,10 @@ final class AutoInjectService: ObservableObject {
         guard !isMonitoring else { return }
         isMonitoring = true
         
-        // 每30分钟检查一次
         timer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
             self?.checkAndAutoInjectAll()
         }
         
-        // 应用启动时立即检查一次
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.checkAndAutoInjectAll()
         }
@@ -43,14 +41,24 @@ final class AutoInjectService: ObservableObject {
     }
     
     func checkAndAutoInjectAll() {
-        // 获取所有支持的应用
-        let apps = AppListModel.fetchApplications(&{}(), &{}())
+        guard !isInjecting else { return }
+        isInjecting = true
+        
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.isInjecting = false
+            }
+        }
+        
+        var unsupportedCount = 0
+        var unsupportedApps: [App] = []
+        let apps = AppListModel.fetchApplications(&unsupportedCount, &unsupportedApps)
         
         DispatchQueue.global(qos: .background).async {
             var injectedCount = 0
+            var failedApps: [String] = []
             
             for app in apps {
-                // 检查是否有需要自动注入的插件
                 let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
                 let injectedURLs = InjectorV3.main.injectedAssetURLsInBundle(app.url)
                 let toInject = persistedURLs.filter { !injectedURLs.contains($0) }
@@ -71,6 +79,7 @@ final class AutoInjectService: ObservableObject {
                         DDLogInfo("Auto injected \(toInject.count) plugins into \(app.bid)")
                     } catch {
                         DDLogError("Auto inject failed for \(app.bid): \(error)")
+                        failedApps.append(app.bid)
                     }
                 }
             }
@@ -80,7 +89,10 @@ final class AutoInjectService: ObservableObject {
                     NotificationCenter.default.post(
                         name: NSNotification.Name("AutoInjectCompleted"),
                         object: nil,
-                        userInfo: ["count": injectedCount]
+                        userInfo: [
+                            "count": injectedCount,
+                            "failedApps": failedApps
+                        ]
                     )
                 }
             }
