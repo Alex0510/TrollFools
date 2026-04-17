@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import CocoaLumberjackSwift
 
 @main
 struct TrollFoolsApp: SwiftUI.App {
