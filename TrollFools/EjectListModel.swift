@@ -48,6 +48,16 @@ final class EjectListModel: ObservableObject {
             .sorted { $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedAscending }
 
         performFilter()
+        
+        // 同步保存当前已启用的插件状态到 AutoResumeService
+        syncSavedState()
+    }
+
+    // 将当前已启用的插件状态保存到 AutoResumeService
+    private func syncSavedState() {
+        let enabledPlugIns = injectedPlugIns.filter { $0.isEnabled }
+        let enabledURLs = enabledPlugIns.map { $0.url }
+        AutoResumeService.shared.saveEnabledPlugIns(for: app, enabledURLs: enabledURLs)
     }
 
     func performFilter() {
@@ -69,5 +79,8 @@ final class EjectListModel: ObservableObject {
             return
         }
         processingPlugIn = plugIn
+        
+        // 单个插件状态变化时，同步保存完整状态（最终由 syncSavedState 统一处理）
+        // 但为了避免重复保存，可以在 toggle 操作完成后再调用 syncSavedState
     }
 }
