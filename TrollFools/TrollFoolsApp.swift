@@ -15,6 +15,13 @@ struct TrollFoolsApp: SwiftUI.App {
 
     init() {
         try? FileManager.default.removeItem(at: InjectorV3.temporaryRoot)
+       
+if #available(iOS 13.0, *) {
+    BackgroundTaskService.shared.registerBackgroundTask()
+    BackgroundTaskService.shared.scheduleAppRefresh()
+}
+        // 启动后台自动注入监控服务
+        AutoInjectService.shared.startMonitoring()
     }
 
     var body: some Scene {
@@ -30,6 +37,10 @@ struct TrollFoolsApp: SwiftUI.App {
                 }
             }
             .animation(.easeInOut, value: isDisclaimerHidden)
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AutoInjectCompleted"))) { _ in
+                // 注入完成后刷新视图
+                NotificationCenter.default.post(name: NSNotification.Name("com.apple.LaunchServices.ApplicationsChanged"), object: nil)
+            }
         }
     }
 }
