@@ -30,7 +30,6 @@ struct AppListView: View {
     @AppStorage("isWarningHidden")
     var isWarningHidden: Bool = false
 
-    // 批量操作状态
     @State private var isBatchProcessing = false
     @State private var batchResultMessage: String?
     @State private var showingUnsupportedApps = false
@@ -129,7 +128,6 @@ struct AppListView: View {
                 selectorOpenedURL = urlIdent
             }
             .onAppear {
-                // 延迟 0.5 秒刷新，避免干扰画中画
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     CheckUpdateManager.shared.checkUpdateIfNeeded { latestVersion, _ in
                         DispatchQueue.main.async {
@@ -174,7 +172,6 @@ struct AppListView: View {
                 }
             }
 
-            // Detail view shown when nothing has been selected
             if !appList.isSelectorMode {
                 PlaceholderView()
             }
@@ -314,7 +311,7 @@ struct AppListView: View {
                 }
             }
         }
-        .disabled(isBatchProcessing) // 批量处理期间禁用整个列表交互
+        .disabled(isBatchProcessing)
     }
 
     var topSection: some View {
@@ -499,8 +496,7 @@ struct AppListView: View {
             : "搜索…")
     }
 
-    // MARK: - 批量操作（修正闪退，无废弃API，无 weak self 错误）
-
+    // MARK: - 批量操作（安全版本，避免 KVO 崩溃）
     private func batchEnableAll() {
         let allApps = appList.allSupportedApps
         guard !allApps.isEmpty else { return }
@@ -522,53 +518,41 @@ struct AppListView: View {
     private func performBatchOperation(on apps: [App], enable: Bool) {
         isBatchProcessing = true
 
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
+        DispatchQueue.global(qos: .userInitiated).async {
             var successCount = 0
             var failCount = 0
 
             for app in apps {
                 do {
                     let injector = try InjectorV3(app.url)
-                    var didSomething = false
-
                     if enable {
                         let persistedURLs = InjectorV3.main.persistedAssetURLs(bid: app.bid)
                         let injectedURLs = InjectorV3.main.injectedAssetURLsInBundle(app.url)
                         let toInject = persistedURLs.filter { !injectedURLs.contains($0) }
                         if !toInject.isEmpty {
                             try injector.inject(toInject, shouldPersist: false)
-                            didSomething = true
                         }
                     } else {
                         let injectedURLs = InjectorV3.main.injectedAssetURLsInBundle(app.url)
                         if !injectedURLs.isEmpty {
                             try injector.ejectAll(shouldDesist: false)
-                            didSomething = true
                         }
                     }
-
-                    if didSomething {
-                        DispatchQueue.main.async { [self] in
-                            app.reload()
-                            // 只通知列表有变化，避免全量刷新
-                            self.appList.objectWillChange.send()
-                        }
-                        successCount += 1
-                    }
+                    successCount += 1
                 } catch {
                     DDLogError("Batch operation failed for \(app.bid): \(error)")
                     failCount += 1
                 }
             }
 
-            DispatchQueue.main.async { [self] in
+            DispatchQueue.main.async {
                 self.isBatchProcessing = false
                 if failCount == 0 {
                     self.batchResultMessage = enable ? "已成功启用 \(successCount) 个应用的插件。" : "已成功禁用 \(successCount) 个应用的插件。"
                 } else {
                     self.batchResultMessage = "完成，成功 \(successCount) 个，失败 \(failCount) 个。"
                 }
-                // 最后再刷新整个列表（确保一致性）
+                // 统一重建整个列表，避免逐个刷新引起的 KVO 问题
                 self.appList.reload()
             }
         }
@@ -577,7 +561,7 @@ struct AppListView: View {
     private func performBatchRemove(on apps: [App]) {
         isBatchProcessing = true
 
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
+        DispatchQueue.global(qos: .userInitiated).async {
             var successCount = 0
             var failCount = 0
 
@@ -585,10 +569,8 @@ struct AppListView: View {
                 do {
                     let injector = try InjectorV3(app.url)
                     try injector.ejectAll(shouldDesist: true)
-                    DispatchQueue.main.async {
-                        app.reload()
-                        AutoResumeService.shared.removeEnabledPlugIns(for: app)
-                    }
+                    // 移除自动恢复状态
+                    AutoResumeService.shared.removeEnabledPlugIns(for: app)
                     successCount += 1
                 } catch {
                     DDLogError("Batch remove failed for \(app.bid): \(error)")
@@ -596,7 +578,7 @@ struct AppListView: View {
                 }
             }
 
-            DispatchQueue.main.async { [self] in
+            DispatchQueue.main.async {
                 self.isBatchProcessing = false
                 if failCount == 0 {
                     self.batchResultMessage = "已成功移除 \(successCount) 个应用的所有插件。"
@@ -614,7 +596,6 @@ struct URLIdentifiable: Identifiable {
     var id: String { url.absoluteString }
 }
 
-// MARK: - 不支持的应用详情页（带图标）
 struct UnsupportedAppsView: View {
     let unsupportedApps: [App]
     @Environment(\.presentationMode) var presentationMode
