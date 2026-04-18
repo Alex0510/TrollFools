@@ -7,6 +7,7 @@
 
 import CocoaLumberjackSwift
 import SwiftUI
+import Darwin
 
 struct AppListCell: View {
     @EnvironmentObject var appList: AppListModel
@@ -305,11 +306,8 @@ struct AppListCell: View {
         }
     }
 
-    // 清除指定应用的 Keychain 条目（需要 root 权限）
+    // 清除指定应用的 Keychain 条目（使用 posix_spawn 以 root 权限执行 sqlite3）
     private func clearKeychainForApp(bundleID: String, teamID: String) -> Bool {
-        // 使用 AuxiliaryExecute 执行 SQLite 命令删除匹配的 Keychain 条目
-        // 注意：需要 root 权限，这里使用 spawnRoot 或现有 RootHelper
-        
         // 构造可能的 access group 前缀
         let possiblePrefixes = [teamID, "\(teamID).\(bundleID)", teamID.components(separatedBy: ".").first ?? teamID]
         var conditions = possiblePrefixes.map { "agrp LIKE '\($0)%'" }.joined(separator: " OR ")
@@ -318,26 +316,45 @@ struct AppListCell: View {
         }
         
         let sql = "DELETE FROM genp WHERE \(conditions);"
-        // 转义 SQL 中的单引号
-        let escapedSQL = sql.replacingOccurrences(of: "'", with: "'\\''")
-        
-        // Keychain 数据库路径
         let dbPath = "/var/Keychains/keychain-2.db"
         
-        // 使用 AuxiliaryExecute 执行 sqlite3 命令（需要 root 权限）
-        // 假设已有 AuxiliaryExecute.execute 方法可以以 root 运行
-        let command = "/usr/bin/sqlite3 \"\(dbPath)\" \"\(escapedSQL)\""
+        // 使用 posix_spawn 以 root 身份执行 sqlite3
+        let result = spawnRoot(command: "/usr/bin/sqlite3", arguments: [dbPath, sql])
         
-        // 注意：需要确保 TrollFools 有执行 root 命令的能力，通常通过 spawnRoot 或 RootHelper
-        // 这里简化调用，实际项目中可能需要使用 InjectorV3 的 root 执行方法
-        let result = AuxiliaryExecute.execute(command: "/bin/bash", arguments: ["-c", command], environment: [:], root: true)
-        
-        if result.0 == 0 {
-            DDLogInfo("Keychain cleared for \(bundleID): \(result.1)")
+        if result == 0 {
+            DDLogInfo("Keychain cleared for \(bundleID)")
             return true
         } else {
-            DDLogError("Failed to clear keychain for \(bundleID): \(result.2)")
+            DDLogError("Failed to clear keychain for \(bundleID): exit code \(result)")
             return false
+        }
+    }
+    
+    // 使用 posix_spawn 以 root 权限执行命令（需要 TrollStore 的 root 权限）
+    private func spawnRoot(command: String, arguments: [String]) -> Int32 {
+        var pid: pid_t = 0
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        
+        // 继承标准输入输出
+        posix_spawn_file_actions_adddup2(fileActions, STDOUT_FILENO, STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(fileActions, STDERR_FILENO, STDERR_FILENO)
+        
+        var args = [command] + arguments
+        let argv: [UnsafeMutablePointer<CChar>?] = args.map { $0.withCString(strdup) }
+        defer { for ptr in argv { free(ptr) } }
+        
+        let env: [UnsafeMutablePointer<CChar>?] = [nil]
+        
+        let status = posix_spawn(&pid, command, &fileActions, nil, argv, env)
+        posix_spawn_file_actions_destroy(&fileActions)
+        
+        if status == 0 {
+            var waitStatus: Int32 = 0
+            waitpid(pid, &waitStatus, 0)
+            return waitStatus
+        } else {
+            return status
         }
     }
 }
