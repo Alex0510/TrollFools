@@ -32,15 +32,36 @@ final class App: ObservableObject {
     lazy var isFromTroll: Bool = isSystem && !isFromApple
     lazy var isRemovable: Bool = url.path.contains("/var/containers/Bundle/Application/")
 
+    // 修正：获取完整绝对路径
     var dataContainerURL: URL? {
         guard let proxy = LSApplicationProxy(forIdentifier: bid) else { return nil }
-        return proxy.value(forKey: "dataContainerURL") as? URL
+        // 直接使用 proxy.dataContainerURL，如果返回的是相对路径，则拼接根目录
+        if let url = proxy.value(forKey: "dataContainerURL") as? URL {
+            // 确保路径以 "/" 开头且包含 "/var/mobile/Containers/Data/Application/"
+            if url.path.hasPrefix("/var/mobile/Containers/Data/Application/") {
+                return url
+            } else if let uuid = url.path.split(separator: "/").last {
+                // 如果只返回了 UUID，则构造完整路径
+                let fullPath = "/var/mobile/Containers/Data/Application/\(uuid)"
+                return URL(fileURLWithPath: fullPath)
+            }
+        }
+        return nil
     }
 
     var appGroupContainerURL: URL? {
         guard let proxy = LSApplicationProxy(forIdentifier: bid) else { return nil }
         guard let groupDict = proxy.value(forKey: "groupContainerURLs") as? [String: URL] else { return nil }
-        return groupDict.values.first
+        // 取第一个应用组容器
+        if let firstURL = groupDict.values.first {
+            if firstURL.path.hasPrefix("/var/mobile/Containers/Shared/AppGroup/") {
+                return firstURL
+            } else if let uuid = firstURL.path.split(separator: "/").last {
+                let fullPath = "/var/mobile/Containers/Shared/AppGroup/\(uuid)"
+                return URL(fileURLWithPath: fullPath)
+            }
+        }
+        return nil
     }
 
     weak var appList: AppListModel?
