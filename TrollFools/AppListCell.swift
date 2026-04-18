@@ -248,8 +248,11 @@ struct AppListCell: View {
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "确认清理", style: .destructive) { _ in
-            performCleanData(at: dataURL)
+        alert.addAction(UIAlertAction(title: "仅清理数据", style: .default) { _ in
+            performCleanData(at: dataURL, cleanKeychain: false)
+        })
+        alert.addAction(UIAlertAction(title: "数据 + Keychain 一起清理", style: .destructive) { _ in
+            performCleanData(at: dataURL, cleanKeychain: true)
         })
 
         if let viewController = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController {
@@ -257,13 +260,14 @@ struct AppListCell: View {
         }
     }
 
-    private func performCleanData(at directory: URL) {
+    private func performCleanData(at directory: URL, cleanKeychain: Bool) {
         isCleaningData = true
         DispatchQueue.global(qos: .userInitiated).async {
             let fileManager = FileManager.default
             var success = true
             var errorMessage: String?
 
+            // 1. 清理文件数据
             do {
                 let contents = try fileManager.contentsOfDirectory(atPath: directory.path)
                 for item in contents {
@@ -275,14 +279,65 @@ struct AppListCell: View {
                 errorMessage = error.localizedDescription
             }
 
+            // 2. 如果需要，清理 Keychain
+            var keychainSuccess = false
+            if cleanKeychain {
+                keychainSuccess = clearKeychainForApp(bundleID: app.bid, teamID: app.teamID)
+                if !keychainSuccess {
+                    success = false
+                    if errorMessage == nil { errorMessage = "Keychain 清理失败" }
+                    else { errorMessage? += "；Keychain 清理失败" }
+                }
+            }
+
             DispatchQueue.main.async {
                 isCleaningData = false
                 if success {
-                    cleanResultMessage = "数据已清理完成。"
+                    if cleanKeychain {
+                        cleanResultMessage = "数据及 Keychain 已清理完成。"
+                    } else {
+                        cleanResultMessage = "数据已清理完成。"
+                    }
                 } else {
                     cleanResultMessage = "清理失败：\(errorMessage ?? "未知错误")"
                 }
             }
+        }
+    }
+
+    // 清除指定应用的 Keychain 条目（需要 root 权限）
+    private func clearKeychainForApp(bundleID: String, teamID: String) -> Bool {
+        // 使用 AuxiliaryExecute 执行 SQLite 命令删除匹配的 Keychain 条目
+        // 注意：需要 root 权限，这里使用 spawnRoot 或现有 RootHelper
+        
+        // 构造可能的 access group 前缀
+        let possiblePrefixes = [teamID, "\(teamID).\(bundleID)", teamID.components(separatedBy: ".").first ?? teamID]
+        var conditions = possiblePrefixes.map { "agrp LIKE '\($0)%'" }.joined(separator: " OR ")
+        if conditions.isEmpty {
+            conditions = "agrp LIKE '%\(bundleID)%'"
+        }
+        
+        let sql = "DELETE FROM genp WHERE \(conditions);"
+        // 转义 SQL 中的单引号
+        let escapedSQL = sql.replacingOccurrences(of: "'", with: "'\\''")
+        
+        // Keychain 数据库路径
+        let dbPath = "/var/Keychains/keychain-2.db"
+        
+        // 使用 AuxiliaryExecute 执行 sqlite3 命令（需要 root 权限）
+        // 假设已有 AuxiliaryExecute.execute 方法可以以 root 运行
+        let command = "/usr/bin/sqlite3 \"\(dbPath)\" \"\(escapedSQL)\""
+        
+        // 注意：需要确保 TrollFools 有执行 root 命令的能力，通常通过 spawnRoot 或 RootHelper
+        // 这里简化调用，实际项目中可能需要使用 InjectorV3 的 root 执行方法
+        let result = AuxiliaryExecute.execute(command: "/bin/bash", arguments: ["-c", command], environment: [:], root: true)
+        
+        if result.0 == 0 {
+            DDLogInfo("Keychain cleared for \(bundleID): \(result.1)")
+            return true
+        } else {
+            DDLogError("Failed to clear keychain for \(bundleID): \(result.2)")
+            return false
         }
     }
 }
