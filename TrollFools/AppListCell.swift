@@ -7,6 +7,7 @@
 
 import CocoaLumberjackSwift
 import SwiftUI
+import LocalAuthentication
 
 struct AppListCell: View {
     @EnvironmentObject var appList: AppListModel
@@ -184,18 +185,18 @@ struct AppListCell: View {
             }
         }
 
-        if app.dataContainerURL != nil {
+        if app.dataContainerURL != nil || app.appGroupContainerURL != nil {
             if #available(iOS 15, *) {
                 Button(role: .destructive) {
                     confirmCleanData()
                 } label: {
-                    Label("清理数据", systemImage: "trash")
+                    Label("彻底清理 (数据+Keychain)", systemImage: "trash.slash")
                 }
             } else {
                 Button {
                     confirmCleanData()
                 } label: {
-                    Label("清理数据", systemImage: "trash")
+                    Label("彻底清理 (数据+Keychain)", systemImage: "trash.slash")
                 }
             }
         }
@@ -239,20 +240,16 @@ struct AppListCell: View {
         appList.openInFilza(url)
     }
 
+    // 确认清理弹窗
     private func confirmCleanData() {
-        guard let dataURL = app.dataContainerURL else { return }
-
         let alert = UIAlertController(
-            title: "清理数据",
-            message: "此操作将删除应用「\(app.name)」的所有用户数据（包括文档、缓存等），此操作不可撤销。是否继续？",
+            title: "彻底清理",
+            message: "此操作将永久删除应用「\(app.name)」的以下数据：\n• 数据目录 (\(app.dataContainerURL?.lastPathComponent ?? "未知"))\n• 应用组目录 (\(app.appGroupContainerURL?.lastPathComponent ?? "无"))\n• Keychain 中的所有条目\n\n此操作不可逆，确定要继续吗？",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "仅清理数据", style: .default) { _ in
-            performCleanData(at: dataURL, cleanKeychain: false)
-        })
-        alert.addAction(UIAlertAction(title: "数据 + Keychain 一起清理", style: .destructive) { _ in
-            performCleanData(at: dataURL, cleanKeychain: true)
+        alert.addAction(UIAlertAction(title: "确认清理", style: .destructive) { _ in
+            performFullClean()
         })
 
         if let viewController = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController {
@@ -260,46 +257,63 @@ struct AppListCell: View {
         }
     }
 
-    private func performCleanData(at directory: URL, cleanKeychain: Bool) {
+    // 执行彻底清理
+    private func performFullClean() {
         isCleaningData = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let fileManager = FileManager.default
             var success = true
-            var errorMessage: String?
+            var errorMessages: [String] = []
+            let fileManager = FileManager.default
 
-            // 1. 清理文件数据
-            do {
-                let contents = try fileManager.contentsOfDirectory(atPath: directory.path)
-                for item in contents {
-                    let itemURL = directory.appendingPathComponent(item)
-                    try fileManager.removeItem(at: itemURL)
+            // 1. 清理数据目录
+            if let dataURL = app.dataContainerURL {
+                do {
+                    let contents = try fileManager.contentsOfDirectory(atPath: dataURL.path)
+                    for item in contents {
+                        let itemURL = dataURL.appendingPathComponent(item)
+                        try fileManager.removeItem(at: itemURL)
+                    }
+                    DDLogInfo("Cleaned data directory for \(app.bid)")
+                } catch {
+                    success = false
+                    errorMessages.append("数据目录清理失败: \(error.localizedDescription)")
+                    DDLogError("Failed to clean data directory: \(error)")
                 }
-            } catch {
-                success = false
-                errorMessage = error.localizedDescription
             }
 
-            // 2. 如果需要，清理 Keychain
-            var keychainSuccess = false
-            if cleanKeychain {
-                keychainSuccess = clearKeychainForApp(bundleID: app.bid, teamID: app.teamID)
-                if !keychainSuccess {
+            // 2. 清理应用组目录
+            if let groupURL = app.appGroupContainerURL {
+                do {
+                    let contents = try fileManager.contentsOfDirectory(atPath: groupURL.path)
+                    for item in contents {
+                        let itemURL = groupURL.appendingPathComponent(item)
+                        try fileManager.removeItem(at: itemURL)
+                    }
+                    DDLogInfo("Cleaned app group directory for \(app.bid)")
+                } catch {
                     success = false
-                    if errorMessage == nil { errorMessage = "Keychain 清理失败" }
-                    else { errorMessage? += "；Keychain 清理失败" }
+                    errorMessages.append("应用组目录清理失败: \(error.localizedDescription)")
+                    DDLogError("Failed to clean app group directory: \(error)")
                 }
+            }
+
+            // 3. 清理 Keychain
+            let keychainCleared = clearKeychainForApp(bundleID: app.bid, teamID: app.teamID)
+            if !keychainCleared {
+                success = false
+                errorMessages.append("Keychain 清理失败")
+            } else {
+                DDLogInfo("Cleaned keychain for \(app.bid)")
             }
 
             DispatchQueue.main.async {
                 isCleaningData = false
                 if success {
-                    if cleanKeychain {
-                        cleanResultMessage = "数据及 Keychain 已清理完成。"
-                    } else {
-                        cleanResultMessage = "数据已清理完成。"
-                    }
+                    cleanResultMessage = "清理完成！\n已删除数据目录、应用组目录及 Keychain 数据。"
+                    // 刷新应用状态
+                    app.reload()
                 } else {
-                    cleanResultMessage = "清理失败：\(errorMessage ?? "未知错误")"
+                    cleanResultMessage = "清理部分失败：\n" + errorMessages.joined(separator: "\n")
                 }
             }
         }
@@ -307,17 +321,16 @@ struct AppListCell: View {
 
     // 清除指定应用的 Keychain 条目（使用 AuxiliaryExecute.spawn 以 root 权限执行 sqlite3）
     private func clearKeychainForApp(bundleID: String, teamID: String) -> Bool {
-        // 构造可能的 access group 前缀
-        let possiblePrefixes = [teamID, "\(teamID).\(bundleID)", teamID.components(separatedBy: ".").first ?? teamID]
+        // 方法：使用 sqlite3 删除 Keychain 数据库中属于该应用或团队的记录
+        let possiblePrefixes = [teamID, "\(teamID).\(bundleID)", teamID.components(separatedBy: ".").first ?? bundleID]
         var conditions = possiblePrefixes.map { "agrp LIKE '\($0)%'" }.joined(separator: " OR ")
         if conditions.isEmpty {
             conditions = "agrp LIKE '%\(bundleID)%'"
         }
         
-        let sql = "DELETE FROM genp WHERE \(conditions);"
+        let sql = "DELETE FROM genp WHERE \(conditions); DELETE FROM cert WHERE \(conditions); DELETE FROM keys WHERE \(conditions); DELETE FROM idents WHERE \(conditions);"
         let dbPath = "/var/Keychains/keychain-2.db"
         
-        // 使用 AuxiliaryExecute.spawn 执行命令（以 root 权限，通过 personaOptions uid=0, gid=0）
         let receipt = AuxiliaryExecute.spawn(
             command: "/usr/bin/sqlite3",
             args: [dbPath, sql],
