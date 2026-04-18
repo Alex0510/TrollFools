@@ -24,10 +24,26 @@ final class AutoResumeService: ObservableObject {
     private let enabledPlugInsKey = "AutoResume_EnabledPlugIns"
     private let appVersionsKey = "AutoResume_AppVersions"
     private var isProcessing = false
-    private var pendingRetry: [String: Int] = [:]  // 记录跳过注入的应用及重试次数
+    private var pendingRetry: [String: Int] = [:]
+    private var isMonitoring = false
+    private var timer: Timer?
     
     private init() {
         setupNotifications()
+    }
+    
+    func startMonitoring() {
+        guard !isMonitoring else { return }
+        isMonitoring = true
+        timer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+            self?.checkAndResumePlugIns(ignoreForegroundCheck: false)
+        }
+    }
+    
+    func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
+        isMonitoring = false
     }
     
     private func setupNotifications() {
@@ -47,25 +63,21 @@ final class AutoResumeService: ObservableObject {
     }
     
     @objc private func applicationDidFinishLaunching() {
-        // 启动后立即检查（延迟 0.5 秒确保 UI 就绪）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             self.checkAndResumePlugIns(ignoreForegroundCheck: false)
         }
     }
     
     @objc private func applicationWillEnterForeground() {
-        // 从后台进入前台时立即检查
-        DispatchQueue.main.async {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.checkAndResumePlugIns(ignoreForegroundCheck: false)
         }
     }
     
-    // 手动触发检查（用于高级设置中的按钮）
     func forceCheck() {
         checkAndResumePlugIns(ignoreForegroundCheck: true)
     }
     
-    // 核心检查方法
     private func checkAndResumePlugIns(ignoreForegroundCheck: Bool = false) {
         guard !isProcessing else { return }
         isProcessing = true
@@ -87,24 +99,33 @@ final class AutoResumeService: ObservableObject {
         var resumedCount = 0
         var failedApps: [String] = []
         var skippedApps: [String] = []
+        var alreadyInjectedApps: [String] = []
         
         for app in apps {
             guard let savedPaths = savedState[app.bid] else { continue }
             
+            // 1. 如果应用已经注入了插件，则完全跳过（避免干扰）
+            if InjectorV3.main.checkIsInjectedAppBundle(app.url) {
+                DDLogDebug("应用 \(app.bid) 已有插件注入，跳过自动恢复")
+                alreadyInjectedApps.append(app.bid)
+                continue
+            }
+            
+            // 2. 检查是否需要注入：版本变化 或 存在持久化资产（曾经注入过但被禁用）
             let currentVersion = getAppVersionIdentifier(app)
             let savedVersion = savedVersions[app.bid] ?? ""
+            let versionChanged = (currentVersion != savedVersion && savedVersion != "")
+            let hasPersisted = InjectorV3.main.hasPersistedAssets(bid: app.bid)
             
-            let needResume = (currentVersion != savedVersion && savedVersion != "")
+            let needResume = versionChanged || hasPersisted
             
             if needResume {
-                // 检查目标应用是否在前台（避免杀死正在使用的应用）
+                // 检查目标应用是否在前台
                 if !ignoreForegroundCheck && isAppInForeground(bundleID: app.bid) {
                     DDLogWarn("应用 \(app.bid) 正在前台运行，跳过自动注入以避免杀死进程")
                     skippedApps.append(app.bid)
-                    // 记录重试次数，稍后重试
                     pendingRetry[app.bid] = (pendingRetry[app.bid] ?? 0) + 1
                     if pendingRetry[app.bid]! <= 3 {
-                        // 延迟 10 秒后重试
                         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
                             self?.checkAndResumePlugIns(ignoreForegroundCheck: false)
                         }
@@ -112,9 +133,9 @@ final class AutoResumeService: ObservableObject {
                     continue
                 }
                 
-                // 清除重试计数
                 pendingRetry.removeValue(forKey: app.bid)
                 
+                // 构建需要注入的插件列表：从保存的路径中过滤存在的文件
                 let savedURLs = savedPaths.compactMap { URL(fileURLWithPath: $0) }
                 let existingURLs = savedURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
                 
@@ -128,15 +149,15 @@ final class AutoResumeService: ObservableObject {
                             injector.teamID = app.teamID
                         }
                         
-                        // 关键：使用 shouldPersist: false 只注入不持久化，避免不必要的杀进程
-                        // 注意：inject 方法内部可能仍然会杀进程，但至少我们不在前台应用时执行
                         try injector.inject(existingURLs, shouldPersist: false)
                         resumedCount += existingURLs.count
-                        DDLogInfo("Auto resumed \(existingURLs.count) plugins for \(app.bid)")
+                        DDLogInfo("自动恢复: 为 \(app.bid) 注入了 \(existingURLs.count) 个插件")
                     } catch {
-                        DDLogError("Auto resume failed for \(app.bid): \(error)")
+                        DDLogError("自动恢复失败 \(app.bid): \(error)")
                         failedApps.append(app.bid)
                     }
+                } else {
+                    DDLogDebug("应用 \(app.bid) 的插件文件已不存在，跳过")
                 }
             }
             
@@ -154,7 +175,8 @@ final class AutoResumeService: ObservableObject {
                     userInfo: [
                         "count": resumedCount,
                         "failedApps": failedApps,
-                        "skippedApps": skippedApps
+                        "skippedApps": skippedApps,
+                        "alreadyInjectedApps": alreadyInjectedApps
                     ]
                 )
             }
@@ -163,9 +185,11 @@ final class AutoResumeService: ObservableObject {
         if !skippedApps.isEmpty {
             DDLogInfo("跳过了 \(skippedApps.count) 个应用（前台运行），稍后将重试")
         }
+        if !alreadyInjectedApps.isEmpty {
+            DDLogInfo("跳过了 \(alreadyInjectedApps.count) 个应用（已注入插件）")
+        }
     }
     
-    // 检查指定 Bundle ID 的应用是否在前台
     private func isAppInForeground(bundleID: String) -> Bool {
         guard let frontmostApp = UIApplication.shared.frontMostAppBundleID() else {
             return false
@@ -173,7 +197,6 @@ final class AutoResumeService: ObservableObject {
         return frontmostApp == bundleID
     }
     
-    // 获取应用的版本标识符
     private func getAppVersionIdentifier(_ app: App) -> String {
         let infoPlistPath = app.url.appendingPathComponent("Info.plist")
         guard let dict = NSDictionary(contentsOf: infoPlistPath) as? [String: Any] else {
@@ -184,7 +207,6 @@ final class AutoResumeService: ObservableObject {
         return "\(version)_\(build)"
     }
     
-    // 保存应用版本信息
     private func saveAppVersion(_ app: App, version: String) {
         var versions = loadAppVersions()
         versions[app.bid] = version
@@ -192,17 +214,15 @@ final class AutoResumeService: ObservableObject {
         userDefaults.synchronize()
     }
     
-    // 加载保存的版本信息
     private func loadAppVersions() -> [String: String] {
         return userDefaults.dictionary(forKey: appVersionsKey) as? [String: String] ?? [:]
     }
     
-    // 加载保存的插件状态
     private func loadAllEnabledPlugIns() -> [String: [String]] {
         return userDefaults.dictionary(forKey: enabledPlugInsKey) as? [String: [String]] ?? [:]
     }
     
-    // 保存插件状态（原有方法保持不变）
+    // MARK: - 公开接口（保存/删除状态）
     func saveEnabledPlugIns(for app: App, enabledURLs: [URL]) {
         var allEnabled = loadAllEnabledPlugIns()
         let enabledPaths = enabledURLs.map { $0.path }
