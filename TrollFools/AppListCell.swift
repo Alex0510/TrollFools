@@ -181,7 +181,7 @@ struct AppListCell: View {
     private func confirmCleanData() {
         let alert = UIAlertController(
             title: "彻底清理",
-            message: "永久删除「\(app.name)」的数据目录、应用组目录内的所有文件，以及 Keychain 数据？\n⚠️ 目录本身不会被删除，仅清空内部内容。\n此操作不可逆！",
+            message: "永久删除「\(app.name)」的用户数据（Documents/Library/Caches/tmp）及 Keychain 数据？\n⚠️ 应用容器根目录不会被删除。\n此操作不可逆！",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -191,6 +191,7 @@ struct AppListCell: View {
         }
     }
 
+    // MARK: - 核心清理逻辑（修正版）
     private func performFullClean() {
         isCleaningData = true
         DispatchQueue.global(qos: .userInitiated).async {
@@ -198,8 +199,8 @@ struct AppListCell: View {
             var errors: [String] = []
             let fm = FileManager.default
 
-            // 安全地清空目录内容（保留目录本身）
-            func emptyDirectory(at url: URL, name: String) -> Bool {
+            // 清空指定目录下的所有内容（保留目录本身）
+            func clearDirectoryContents(at url: URL, name: String) -> Bool {
                 guard fm.fileExists(atPath: url.path) else {
                     errors.append("\(name) 目录不存在: \(url.path)")
                     return false
@@ -207,7 +208,6 @@ struct AppListCell: View {
                 do {
                     let items = try fm.contentsOfDirectory(atPath: url.path)
                     for item in items {
-                        // 跳过 . 和 .. 防止意外
                         if item == "." || item == ".." { continue }
                         let itemURL = url.appendingPathComponent(item)
                         try fm.removeItem(at: itemURL)
@@ -219,18 +219,27 @@ struct AppListCell: View {
                 }
             }
 
-            // 1. 清空数据目录
+            // 1. 清空数据容器的标准子目录（保留根目录）
             if let dataURL = app.dataContainerURL {
-                if !emptyDirectory(at: dataURL, name: "数据目录") {
-                    success = false
-                } else {
-                    DDLogInfo("数据目录已清空: \(dataURL.path)")
+                let subdirs = ["Documents", "Library", "Caches", "tmp"]
+                for sub in subdirs {
+                    let subURL = dataURL.appendingPathComponent(sub)
+                    if fm.fileExists(atPath: subURL.path) {
+                        if !clearDirectoryContents(at: subURL, name: "数据目录/\(sub)") {
+                            success = false
+                        } else {
+                            DDLogInfo("清空: \(subURL.path)")
+                        }
+                    } else {
+                        // 目录不存在则忽略（不是错误）
+                        DDLogDebug("目录不存在: \(subURL.path)")
+                    }
                 }
             }
 
-            // 2. 清空应用组目录
+            // 2. 清空应用组目录（清空其下所有内容，但保留目录本身）
             if let groupURL = app.appGroupContainerURL {
-                if !emptyDirectory(at: groupURL, name: "应用组目录") {
+                if !clearDirectoryContents(at: groupURL, name: "应用组目录") {
                     success = false
                 } else {
                     DDLogInfo("应用组目录已清空: \(groupURL.path)")
@@ -249,7 +258,7 @@ struct AppListCell: View {
             DispatchQueue.main.async {
                 isCleaningData = false
                 if success {
-                    cleanResultMessage = "清理完成！\n数据目录、应用组目录已清空，Keychain 已清理。"
+                    cleanResultMessage = "清理完成！\n已清空应用数据（Documents/Library/Caches/tmp）及 Keychain。"
                     app.reload()
                 } else {
                     cleanResultMessage = "清理部分失败：\n" + errors.joined(separator: "\n")
@@ -260,7 +269,6 @@ struct AppListCell: View {
 
     // MARK: - Keychain 清理（增强版）
     private func clearKeychainForApp(bundleID: String, teamID: String) -> Bool {
-        // 可能的 access group 精确值
         let possibleGroups = [
             "\(teamID).\(bundleID)",
             teamID,
@@ -277,7 +285,7 @@ struct AppListCell: View {
 
         var anyDeleted = false
 
-        // 尝试精确匹配
+        // 精确匹配
         for secClass in secClasses {
             for group in possibleGroups {
                 let query: [CFString: Any] = [
@@ -303,7 +311,7 @@ struct AppListCell: View {
             }
         }
 
-        // 如果精确匹配没有删除任何内容，则尝试模糊匹配（遍历所有条目）
+        // 模糊匹配回退
         if !anyDeleted {
             DDLogDebug("精确匹配未找到条目，尝试模糊匹配...")
             for secClass in secClasses {
